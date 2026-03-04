@@ -160,9 +160,6 @@ export default function Page() {
       >
         <ThemedText style={styles.buttonText}>Continue</ThemedText>
       </Pressable>
-      {/* For your debugging purposes. You can just console.log errors, but we put them in the UI for convenience */}
-      {errors && <ThemedText style={styles.debug}>{JSON.stringify(errors, null, 2)}</ThemedText>}
-
       <View style={styles.linkContainer}>
         <ThemedText>Don't have an account? </ThemedText>
         <Link href="/sign-up">

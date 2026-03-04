@@ -5,6 +5,7 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import 'react-native-reanimated'
+import SafeScreen from "@/components/SafeScreen";
 
 const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY!
 
@@ -22,13 +23,13 @@ export default function RootLayout() {
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
-        <Stack>
-          <Stack.Screen name="(home)" options={{ headerShown: false }} />
-          <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-          {/* <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-          <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} /> */}
-        </Stack>
-        <StatusBar style="auto" />
+        <SafeScreen>
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="(home)" options={{ headerShown: false }} />
+            <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+          </Stack>
+        </SafeScreen>
+        <StatusBar style="dark" />
       </ClerkProvider>
     </ThemeProvider>
   )
