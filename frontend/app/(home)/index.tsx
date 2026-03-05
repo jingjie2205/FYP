@@ -6,6 +6,7 @@ import { Link } from 'expo-router'
 import { StyleSheet } from 'react-native'
 import { useTransactions } from '@/hooks/useTransactions'
 import { useEffect } from 'react'
+import PageLoader from '@/components/PageLoader'
 
 export default function Page() {
   const { user, isLoaded, isSignedIn } = useUser()
@@ -21,13 +22,11 @@ export default function Page() {
     if (user?.id) {
         loadData();
     }
-    console.log("session:", user?.id)
-    console.log("currentTask:", session?.currentTask)
-    console.log("transactions:", transactions)
-    console.log("Summary:", summary)
   }, [loadData, user?.id])
 
-
+  if (isLoading) {
+    return <PageLoader />
+  }
 
   return (
     <ThemedView style={styles.container}>
