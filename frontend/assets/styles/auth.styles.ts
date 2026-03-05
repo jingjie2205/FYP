@@ -15,7 +15,7 @@ export const styles = StyleSheet.create({
     resizeMode: "contain",
   },
   title: {
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: "bold",
     color: COLORS.text,
     marginVertical: 15,
@@ -60,7 +60,7 @@ export const styles = StyleSheet.create({
   linkText: {
     color: COLORS.primary,
     fontSize: 16,
-    fontWeight: "600",
+    fontWeight: "300",
   },
   verificationContainer: {
     flex: 1,
@@ -90,6 +90,48 @@ export const styles = StyleSheet.create({
     letterSpacing: 2,
   },
 
+  buttonPressed: {
+    opacity: 0.7,
+  },
+  buttonDisabled: {
+    opacity: 0.5,
+  },
+  secondaryButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+    alignItems: "center",
+    marginTop: 8,
+  },
+  secondaryButtonText: {
+    color: "#0a7ea4",
+    fontWeight: "600",
+  },
+  linkContainer: {
+    flexDirection: "row",
+    gap: 4,
+    marginTop: 12,
+    alignItems: "center",
+  },
+  error: {
+    color: "#d32f2f",
+    fontSize: 12,
+    marginTop: -8,
+  },
+  debug: {
+    fontSize: 10,
+    opacity: 0.5,
+    marginTop: 8,
+  },
+  label: {
+    fontWeight: "600",
+    fontSize: 14,
+    color: COLORS.text,
+  },
+  cancel: {
+    color: "#333",
+  },
+
   // 🔴 Error styles
   errorBox: {
     backgroundColor: "#FFE5E5",
@@ -103,7 +145,7 @@ export const styles = StyleSheet.create({
     width: "100%",
   },
   errorText: {
-    color: COLORS.text,
+    color: "#D9534F",
     marginLeft: 8,
     flex: 1,
     fontSize: 14,
