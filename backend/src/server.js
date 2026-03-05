@@ -5,16 +5,26 @@ import rateLimiter from "./middleware/rateLimiter.js";
 import { initDB } from "./config/db.js";
 
 import transactionsRoute from "./routes/transactionsRoute.js"
+import job from "./config/cron.js"
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5001;
 
+// CRON JOB
+if (process.env.NODE_ENV === "production") {
+  job.start();
+}
+
 // middleware
 app.use(cors());
 app.use(express.json());
 app.use(rateLimiter)
+
+app.get("/api/health", (req, res) => {
+    res.status(200).json({ message: "OK" });
+}
 
 app.use((req, res, next) => {
     console.log("Hit a request: ", req.method, req.url);
