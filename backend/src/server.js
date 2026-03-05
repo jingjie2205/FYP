@@ -24,7 +24,7 @@ app.use(rateLimiter)
 
 app.get("/api/health", (req, res) => {
     res.status(200).json({ message: "OK" });
-}
+})
 
 app.use((req, res, next) => {
     console.log("Hit a request: ", req.method, req.url);
