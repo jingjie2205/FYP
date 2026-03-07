@@ -27,7 +27,7 @@ export const useTransactions = (userId) => {
     try {
         const response = await fetch(`${API_URL}/transactions/summary/${userId}`)
         const data = await response.json()
-        setTransactions(data)
+        setSummary(data)
     } catch (e) {
         console.error("Error fetching summary:", e)
     }
@@ -54,7 +54,7 @@ export const useTransactions = (userId) => {
         if (!response.ok) {
             throw new Error('Failed to delete transaction')
         }
-        await fetchData()
+        await loadData()
         Alert.alert('Transaction deleted')
     } catch (e) {
         console.error('Error deleting transaction:', e)

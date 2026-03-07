@@ -1,49 +1,34 @@
-// import { useClerk } from '@clerk/expo'
-// import * as Linking from "expo-linking";
-// import { Text, TouchableOpacity } from "react-native";
-
-// export const SignOutButton = () => {
-//   // Use 'useClerk()' to access the 'signOut()' function
-//   const { signOut } = useClerk();
-  
-//   const handleSignOut = async () => {
-//     try {
-//       await signOut();
-//       // Redirect to your desired page
-//       Linking.openURL(Linking.createURL("/"));
-//     } catch (err) {
-//       // See https://clerk.com/docs/custom-flows/error-handling
-//       // for more info on error handling
-//       console.error(JSON.stringify(err, null, 2));
-//     }
-//   };
-
-//   return (
-//     <TouchableOpacity onPress={handleSignOut}>
-//       <Text>Sign out</Text>
-//     </TouchableOpacity>
-//   );
-// };
-
 import { ThemedText } from '@/components/themed-text'
 import { useClerk } from '@clerk/expo'
+import { Ionicons } from '@expo/vector-icons'
 import { useRouter } from 'expo-router'
-import { Pressable, StyleSheet } from 'react-native'
+import { Alert, Pressable, StyleSheet } from 'react-native'
+import { COLORS } from '@/constants/colors'
 
 export const SignOutButton = () => {
   const { signOut } = useClerk()
   const router = useRouter()
 
   const handleSignOut = async () => {
-    try {
-      await signOut()
-      // Redirect to your desired page
-      router.replace('/')
-    } catch (err) {
-      // See https://clerk.com/docs/guides/development/custom-flows/error-handling
-      // for more info on error handling
-      console.error(JSON.stringify(err, null, 2))
-    }
+    Alert.alert(
+      'Sign out',
+      'Are you sure you want to sign out?',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Sign out',
+          onPress: async () => {
+            await signOut()
+            // Redirect to your desired page
+            router.replace('/sign-in')
+          },
+        },
+      ],
+      { cancelable: false }
+    )
   }
 
   return (
@@ -51,14 +36,13 @@ export const SignOutButton = () => {
       style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
       onPress={handleSignOut}
     >
-      <ThemedText style={styles.buttonText}>Sign out</ThemedText>
+      <Ionicons name="log-out-outline" size={22} color={COLORS.text} />
     </Pressable>
   )
 }
 
 const styles = StyleSheet.create({
   button: {
-    backgroundColor: '#0a7ea4',
     paddingVertical: 12,
     paddingHorizontal: 24,
     borderRadius: 8,
