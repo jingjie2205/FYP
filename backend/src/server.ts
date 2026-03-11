@@ -2,9 +2,8 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import rateLimiter from "./middleware/rateLimiter.ts";
-
 import transactionsRoute from "./routes/transactionsRoute.ts"
-import job from "./config/cron.js"
+import job from "./config/cron.ts"
 
 dotenv.config();
 
