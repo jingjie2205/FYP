@@ -3,4 +3,6 @@ import { createUser } from "../controllers/usersController.ts"
 
 const router = express.Router()
 
-router.post("/users", createUser)
+router.post("/", createUser)
+
+export default router

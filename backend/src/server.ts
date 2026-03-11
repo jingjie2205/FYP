@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import rateLimiter from "./middleware/rateLimiter.ts";
 import transactionsRoute from "./routes/transactionsRoute.ts"
+import usersRoute from "./routes/usersRoutes.ts"
 import job from "./config/cron.ts"
 
 dotenv.config();
@@ -34,3 +35,4 @@ app.get("/", ( req : Request, res : Response) => {
 });
 
 app.use("/api/transactions", transactionsRoute)
+app.use("/api/users", usersRoute);
