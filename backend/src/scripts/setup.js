@@ -1,4 +1,4 @@
-import { sql } from '../config/db.js';
+import { sql } from '../config/db.ts';
 
 async function initializeDatabase() {
     console.log("Connecting to Neon to initialize tables...");

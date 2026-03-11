@@ -1,6 +1,7 @@
 import { sql } from "../config/db.js"
+import express, { Request, Response } from "express";
 
-export async function getTransactionsByUserId(req, res) {
+export async function getTransactionsByUserId(req : Request, res : Response) {
     try {
         const { userId } = req.params
 
@@ -17,7 +18,7 @@ export async function getTransactionsByUserId(req, res) {
     }
 }
 
-export async function createTransaction (req, res) {
+export async function createTransaction (req : Request, res : Response) {
     try {
         const { title, amount, category, user_id } = req.body;
 
@@ -39,12 +40,12 @@ export async function createTransaction (req, res) {
     }
 }
 
-export async function deleteTransaction (req, res) {
+export async function deleteTransaction (req : Request, res : Response) {
     try {
         const { id } = req.params
 
         // Validate id before hitting sql query
-        if (isNaN(parseInt(id))) {
+        if (isNaN(parseInt(id as string))) {
             return res.status(400).json({ message:"Invalid transaction ID" })
         }
 
@@ -64,7 +65,7 @@ export async function deleteTransaction (req, res) {
     }
 }
 
-export async function getSummary (req, res) {
+export async function getSummary (req : Request, res : Response) {
     try {
         const { userId } = req.params
 
