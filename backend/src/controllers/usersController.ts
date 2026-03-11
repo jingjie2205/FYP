@@ -1,4 +1,4 @@
-import { sql } from "../config/db.ts"
+import { sql } from "../config/db.js"
 import express, { Request, Response } from "express";
 
 export async function createUser(req : Request, res : Response) {

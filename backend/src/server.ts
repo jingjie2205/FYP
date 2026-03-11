@@ -1,10 +1,10 @@
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import rateLimiter from "./middleware/rateLimiter.ts";
-import transactionsRoute from "./routes/transactionsRoute.ts"
-import usersRoute from "./routes/usersRoutes.ts"
-import job from "./config/cron.ts"
+import rateLimiter from "./middleware/rateLimiter.js";
+import transactionsRoute from "./routes/transactionsRoute.js"
+import usersRoute from "./routes/usersRoutes.js"
+import job from "./config/cron.js"
 
 dotenv.config();
 
@@ -36,3 +36,7 @@ app.get("/", ( req : Request, res : Response) => {
 
 app.use("/api/transactions", transactionsRoute)
 app.use("/api/users", usersRoute);
+
+app.listen(PORT, () => {
+    console.log(`🚀 Server is running on port ${PORT}`);
+});
