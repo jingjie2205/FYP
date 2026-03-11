@@ -10,9 +10,18 @@ export async function createUser(req : Request, res : Response) {
         }
 
         const user = await sql`
-            INSERT INTO users (id, email)
-            VALUES (${user_id}, ${email})
-            RETURNING *
+            WITH new_user AS (
+                INSERT INTO users (id, email)
+                VALUES (${user_id}, ${email})
+                ON CONFLICT (id) DO NOTHING
+                RETURNING *
+            ),
+            new_account AS (
+                INSERT INTO accounts (user_id, name, type, balance, is_default)
+                SELECT id, 'Cash Wallet', 'cash', 0.00, TRUE
+                FROM new_user
+            )
+            SELECT * FROM new_user;
         `;
 
         console.log(user);
