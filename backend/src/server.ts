@@ -1,8 +1,7 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import rateLimiter from "./middleware/rateLimiter.js";
-import { initDB } from "./config/db.js";
 
 import transactionsRoute from "./routes/transactionsRoute.js"
 import job from "./config/cron.js"
@@ -22,23 +21,17 @@ app.use(cors());
 app.use(express.json());
 app.use(rateLimiter)
 
-app.get("/api/health", (req, res) => {
+app.get("/api/health", (req : Request, res : Response) => {
     res.status(200).json({ message: "OK" });
 })
 
-app.use((req, res, next) => {
+app.use((req : Request, res : Response, next : NextFunction) => {
     console.log("Hit a request: ", req.method, req.url);
     next();
 });
 
-app.get("/", (req, res) => {
+app.get("/", ( req : Request, res : Response) => {
     res.send("test!");
 });
 
 app.use("/api/transactions", transactionsRoute)
-
-initDB().then(() => {
-    app.listen(PORT, () => {
-        console.log(`Server is running on port ${PORT}`);
-    });
-});

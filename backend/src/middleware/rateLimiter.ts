@@ -1,6 +1,7 @@
 import ratelimiter from "../config/upstash.js"
+import { Request, Response, NextFunction } from "express";
 
-const rateLimiter = async(req, res , next) => {
+const rateLimiter = async(req : Request, res : Response , next : NextFunction) => {
     try {
         // Placeholder - use user_id or ip address in future
         const { success } = await ratelimiter.limit("my-rate-limit")
@@ -12,7 +13,7 @@ const rateLimiter = async(req, res , next) => {
         next()
     } catch (e) {
         console.log("Rate Limit Error", e)
-        next(error)
+        next(e)
     }
 }
 
