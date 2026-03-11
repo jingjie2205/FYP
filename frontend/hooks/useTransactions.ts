@@ -1,9 +1,9 @@
 import { useCallback, useState } from 'react'
 import { Alert } from 'react-native'
 
-const API_URL = "https://fyp-g5cv.onrender.com/api"
+const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
-export const useTransactions = (userId) => {
+export const useTransactions = (userId : string | undefined) => {
   const [transactions, setTransactions] = useState([])
   const [summary, setSummary] = useState({
     balance: 0,
@@ -46,7 +46,7 @@ export const useTransactions = (userId) => {
     }
   }, [userId, fetchTransactions, fetchSummary])
 
-  const deleteTransaction = async (id) => {
+  const deleteTransaction = async (id : string) => {
     try {
         const response = await fetch(`${API_URL}/transactions/${id}`, {
             method: 'DELETE',
@@ -58,9 +58,11 @@ export const useTransactions = (userId) => {
         Alert.alert('Transaction deleted')
     } catch (e) {
         console.error('Error deleting transaction:', e)
-        Alert.alert('Error deleting transaction', e.message)
+        const errorMessage = e instanceof Error ? e.message : 'An unknown error occurred'
+        Alert.alert('Error deleting transaction', errorMessage)
     }
   }
+  
   return {
     transactions,
     summary,

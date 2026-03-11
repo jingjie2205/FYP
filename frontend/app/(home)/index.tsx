@@ -20,7 +20,7 @@ export default function Page() {
   const { session } = useSession()
   const [refreshing, setRefreshing] = useState(false)
 
-  const { transactions, summary, isLoading, loadData, deleteTransaction } = useTransactions(isLoaded && isSignedIn ? user?.id : null)
+  const { transactions, summary, isLoading, loadData, deleteTransaction } = useTransactions(isLoaded && isSignedIn ? user?.id : undefined)
 
   const onRefresh = async () => {
     setRefreshing(true)
@@ -34,7 +34,7 @@ export default function Page() {
     }
   }, [loadData, user?.id])
 
-  if (isLoading && !refreshing) return <PageLoader />
+  if (isLoading && !refreshing && isSignedIn) return <PageLoader />
 
   const handleDelete = (id : string) => {
     Alert.alert("Delete Transaction", "Are you sure you want to delete this transaction?", [
