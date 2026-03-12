@@ -9,6 +9,7 @@ router.get("/:userId", getCategories)
 // DELETE category by id
 router.delete("/:id", deleteCategory)
 
+// Create category by user_id
 router.post("/:userId", createCategory);
 
 export default router

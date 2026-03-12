@@ -5,6 +5,8 @@ import rateLimiter from "./middleware/rateLimiter.js";
 import transactionsRoute from "./routes/transactionsRoute.js"
 import usersRoute from "./routes/usersRoute.js"
 import categoriesRoute from "./routes/categoriesRoute.js"
+import budgetsRoute from "./routes/budgetsRoute.js"
+import accountsRoute from "./routes/accountsRoute.js"
 import job from "./config/cron.js"
 
 dotenv.config();
@@ -38,6 +40,8 @@ app.get("/", ( req : Request, res : Response) => {
 app.use("/api/transactions", transactionsRoute)
 app.use("/api/users", usersRoute);
 app.use("/api/categories", categoriesRoute)
+app.use("/api/budgets", budgetsRoute)
+app.use("/api/accounts", accountsRoute)
 
 app.listen(PORT, () => {
     console.log(`🚀 Server is running on port ${PORT}`);

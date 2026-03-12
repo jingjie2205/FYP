@@ -24,9 +24,9 @@ async function initializeDatabase() {
                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 
                 name VARCHAR(255) NOT NULL,
-                type VARCHAR(50) NOT NULL DEFAULT 'checking',
                 balance DECIMAL(10, 2) NOT NULL DEFAULT 0,
                 is_default BOOLEAN DEFAULT FALSE, 
+
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, name, type) 
@@ -88,7 +88,7 @@ async function initializeDatabase() {
                 amount DECIMAL(10, 2) NOT NULL,
                 type VARCHAR(50) NOT NULL,
                 notes TEXT,
-                transaction_date DATE NOT NULL,
+                transaction_date DATE NOT NULL DEFAULT CURRENT_DATE,
 
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

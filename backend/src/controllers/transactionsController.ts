@@ -1,5 +1,6 @@
 import { sql } from "../config/db.js"
 import express, { Request, Response } from "express";
+import { createTransactionRecord } from "../services/transactionService.js"
 
 export async function getTransactionsByUserId(req : Request, res : Response) {
     try {
@@ -20,24 +21,50 @@ export async function getTransactionsByUserId(req : Request, res : Response) {
 
 export async function createTransaction (req : Request, res : Response) {
     try {
-        const { title, amount, category, user_id } = req.body;
+        const {
+            user_id,
+            account_id,
+            category_id,
+            title,
+            amount,
+            type,
+            notes,
+            transaction_date
+        } = req.body
 
-        if (!title || !amount || category === undefined || !user_id) {
-            return res.status(400).json({ error: "Missing required fields" });
+        // Validate required fields
+        if (!user_id || !account_id || !title || amount === undefined || !type || !transaction_date) {
+            return res.status(400).json({
+                error: "Missing required fields"
+            })
         }
 
-        const transaction = await sql`
-            INSERT INTO transactions (user_id, title, amount, category)
-            VALUES (${user_id}, ${title}, ${amount}, ${category})
-            RETURNING *
-        `;
+        // Validate amount
+        if (isNaN(amount) || amount <= 0) {
+            return res.status(400).json({
+                error: "Amount must be a positive number"
+            })
+        }
 
-        console.log(transaction);
-        res.status(201).json(transaction[0]);
-    } catch (e) {
-        console.error("Error creating transaction:", e);
-        res.status(500).json({ error: "Internal server error" });
-    }
+        const transaction = await createTransactionRecord({
+            user_id,
+            account_id,
+            category_id,
+            title,
+            amount,
+            type,
+            notes,
+            transaction_date: new Date(transaction_date)
+        })
+
+        res.status(201).json(transaction)
+
+  } catch (e) {
+    console.error("Error creating transaction:", e)
+    res.status(500).json({
+      error: "Internal server error - Transactions"
+    })
+  }
 }
 
 export async function deleteTransaction (req : Request, res : Response) {
