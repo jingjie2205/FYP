@@ -39,11 +39,12 @@ async function initializeDatabase() {
             CREATE TABLE IF NOT EXISTS categories (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                // userid can be null for global system categories
+                user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
 
                 name VARCHAR(255) NOT NULL,
-                icon VARCHAR(50) NOT NULL DEFAULT 'ellipse',
                 type VARCHAR(50) NOT NULL DEFAULT 'expense',
+                is_system BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- ADDED MISSING COMMA
                 UNIQUE(user_id, name, type) 
             );
