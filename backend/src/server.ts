@@ -3,7 +3,8 @@ import cors from "cors";
 import dotenv from "dotenv";
 import rateLimiter from "./middleware/rateLimiter.js";
 import transactionsRoute from "./routes/transactionsRoute.js"
-import usersRoute from "./routes/usersRoutes.js"
+import usersRoute from "./routes/usersRoute.js"
+import categoriesRoute from "./routes/categoriesRoute.js"
 import job from "./config/cron.js"
 
 dotenv.config();
@@ -36,6 +37,7 @@ app.get("/", ( req : Request, res : Response) => {
 
 app.use("/api/transactions", transactionsRoute)
 app.use("/api/users", usersRoute);
+app.use("/api/categories", categoriesRoute)
 
 app.listen(PORT, () => {
     console.log(`🚀 Server is running on port ${PORT}`);
