@@ -7,7 +7,7 @@ export async function getCategories(req : Request, res : Response) {
 
         const categories = await sql`
             SELECT * FROM categories
-            WHERE user_id = ${ userId } AND is_system = TRUE
+            WHERE user_id = ${ userId } OR is_system = TRUE
             ORDER BY created_at DESC
         `
 
