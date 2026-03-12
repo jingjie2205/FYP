@@ -13,7 +13,7 @@ export async function getCategories(req : Request, res : Response) {
 
         res.status(200).json(categories)
     } catch (e) {
-        console.error("Error creating transaction:", e);
+        console.error("Error fetching categories:", e);
         res.status(500).json({ error: "Internal server error" });
     }
 }

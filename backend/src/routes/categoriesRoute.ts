@@ -9,6 +9,6 @@ router.get("/:userId", getCategories)
 // DELETE category by id
 router.delete("/:id", deleteCategory)
 
-router.post("/", createCategory);
+router.post("/:userId", createCategory);
 
 export default router
