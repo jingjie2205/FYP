@@ -8,11 +8,13 @@ import { Link, useRouter } from "expo-router";
 import React from "react";
 import { Pressable, TextInput, TouchableOpacity, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
+import { useUsers } from "@/hooks/useUsers";
 
 export default function Page() {
   const { signUp, errors, fetchStatus } = useSignUp();
   const { isSignedIn } = useAuth();
   const router = useRouter();
+  const { addUser } = useUsers();
 
   const [pendingVerification, setPendingVerification] = React.useState(false);
   const [emailAddress, setEmailAddress] = React.useState("");
@@ -64,15 +66,26 @@ export default function Page() {
     if (signUp.status === "complete") {
       await signUp.finalize({
         // Redirect the user to the home page after signing up
-        navigate: ({ session, decorateUrl }) => {
-          if (session?.currentTask) {
-            // Handle pending session tasks
-            // See https://clerk.com/docs/guides/development/custom-flows/authentication/session-tasks
-            console.log(session?.currentTask);
-            return;
-          }
-          setPendingVerification(false);
+        navigate: async ({ session, decorateUrl }) => {
+          // if (session?.currentTask) {
+          //   // Handle pending session tasks
+          //   // See https://clerk.com/docs/guides/development/custom-flows/authentication/session-tasks
+          //   console.log(session?.currentTask);
+          //   return;
+          // }
+          const clerkUserId = session?.user?.id;
+          const email = emailAddress;
 
+          console.log(clerkUserId, email);
+
+          if (clerkUserId && email) {
+            await addUser({
+              userId: clerkUserId,
+              email: email,
+            });
+          } 
+
+          setPendingVerification(false);
           router.replace("/");
         },
       });

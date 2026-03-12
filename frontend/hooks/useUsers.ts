@@ -9,7 +9,6 @@ interface UserDetails {
 }
 
 export const useUsers = () => {
-    const [user, setUser] = useState(null)
     const [isLoading, setIsLoading] = useState(false)
 
     const addUser = useCallback(async (userData: UserDetails) => {
@@ -22,7 +21,7 @@ export const useUsers = () => {
                 },
 
                 body: JSON.stringify({
-                    id: userData.userId,
+                    user_id: userData.userId,
                     email: userData.email.toLowerCase(),
                 }),
             });
@@ -31,8 +30,6 @@ export const useUsers = () => {
                 const errorData = await response.json();
                 throw new Error(errorData.error || 'Failed to create user');
             }
-            const data = await response.json();
-            setUser(data);
             
         } catch (e: unknown) {
             const errorMessage = e instanceof Error ? e.message : 'An unknown error occurred';
@@ -44,7 +41,6 @@ export const useUsers = () => {
     }, [])
 
     return {
-        user,
         isLoading,
         addUser
     }
