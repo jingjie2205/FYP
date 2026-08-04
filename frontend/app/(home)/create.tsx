@@ -5,6 +5,7 @@ import {
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
+  ScrollView,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useUser } from "@clerk/expo";
@@ -14,41 +15,42 @@ import { styles } from "../../assets/styles/create.styles";
 import { COLORS } from "../../constants/colors";
 import { Ionicons } from "@expo/vector-icons";
 
-// Import your new hook (adjust the path if necessary)
 import { useCategories } from "../../hooks/useCategories"; 
+import { useAccounts } from "../../hooks/useAccounts"; // 1. Import new hook
 
 const CreateScreen = () => {
   const router = useRouter();
   const { user } = useUser();
 
-  // Integrated Hook
   const { categories, fetchCategories, createCategory, isLoading: isCategoriesLoading } = useCategories(user?.id);
+  // 2. Initialize Accounts hook
+  const { accounts, fetchAccounts, isLoading: isAccountsLoading } = useAccounts(user?.id); 
 
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("");
+  const [selectedAccount, setSelectedAccount] = useState(""); // 3. State for account selection
   const [isExpense, setIsExpense] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
 
-  // New states for creating a category dynamically
   const [isAddingCategory, setIsAddingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
 
-  // Fetch categories when the screen mounts
+  // 4. Fetch both Categories and Accounts on mount
   useEffect(() => {
     if (user?.id) {
       fetchCategories();
+      fetchAccounts(); 
     }
-  }, [user?.id, fetchCategories]);
+  }, [user?.id, fetchCategories, fetchAccounts]);
 
   const handleCreateTransaction = async () => {
-    // validations
     if (!title.trim()) return Alert.alert("Error", "Please enter a transaction title");
     if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
-      Alert.alert("Error", "Please enter a valid amount");
-      return;
+      return Alert.alert("Error", "Please enter a valid amount");
     }
-
+    // 5. Add validation for account selection
+    if (!selectedAccount) return Alert.alert("Error", "Please select an account");
     if (!selectedCategory) return Alert.alert("Error", "Please select a category");
 
     setIsLoading(true);
@@ -64,6 +66,7 @@ const CreateScreen = () => {
         },
         body: JSON.stringify({
           user_id: user?.id,
+          account_id: selectedAccount, // 6. Include account_id in the payload
           title,
           amount: formattedAmount,
           category: selectedCategory,
@@ -84,7 +87,6 @@ const CreateScreen = () => {
     }
   };
 
-  // Handler for creating a new category
   const handleAddNewCategory = async () => {
     if (!newCategoryName.trim()) {
       return Alert.alert("Error", "Category name cannot be empty");
@@ -93,21 +95,19 @@ const CreateScreen = () => {
     await createCategory({
       name: newCategoryName.trim(),
       type: isExpense ? "expense" : "income",
-      icon: "ellipsis-horizontal", // Default icon for user-created categories
+      icon: "ellipsis-horizontal", 
     });
     
     setNewCategoryName("");
     setIsAddingCategory(false);
   };
 
-  // Filter categories based on the current transaction type (Expense vs Income)
   const currentCategories = categories.filter(
     (cat) => cat.type === (isExpense ? "expense" : "income")
   );
 
   return (
     <View style={styles.container}>
-      {/* HEADER */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
@@ -123,14 +123,13 @@ const CreateScreen = () => {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.card}>
+      <ScrollView style={styles.card} showsVerticalScrollIndicator={false}>
         <View style={styles.typeSelector}>
-          {/* EXPENSE SELECTOR */}
           <TouchableOpacity
             style={[styles.typeButton, isExpense && styles.typeButtonActive]}
             onPress={() => {
               setIsExpense(true);
-              setSelectedCategory(""); // Reset selection when switching types
+              setSelectedCategory(""); 
             }}
           >
             <Ionicons
@@ -144,7 +143,6 @@ const CreateScreen = () => {
             </Text>
           </TouchableOpacity>
 
-          {/* INCOME SELECTOR */}
           <TouchableOpacity
             style={[styles.typeButton, !isExpense && styles.typeButtonActive]}
             onPress={() => {
@@ -164,7 +162,6 @@ const CreateScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {/* AMOUNT CONTAINER */}
         <View style={styles.amountContainer}>
           <Text style={styles.currencySymbol}>$</Text>
           <TextInput
@@ -177,14 +174,8 @@ const CreateScreen = () => {
           />
         </View>
 
-        {/* INPUT CONTAINER */}
         <View style={styles.inputContainer}>
-          <Ionicons
-            name="create-outline"
-            size={22}
-            color={COLORS.textLight}
-            style={styles.inputIcon}
-          />
+          <Ionicons name="create-outline" size={22} color={COLORS.textLight} style={styles.inputIcon} />
           <TextInput
             style={styles.input}
             placeholder="Transaction Title"
@@ -194,12 +185,48 @@ const CreateScreen = () => {
           />
         </View>
 
-        {/* TITLE */}
-        <Text style={styles.sectionTitle}>
+        {/* 7. ACCOUNT SELECTOR UI */}
+        <Text style={[styles.sectionTitle, { marginTop: 15 }]}>
+          <Ionicons name="wallet-outline" size={16} color={COLORS.text} /> Account
+        </Text>
+
+        {isAccountsLoading ? (
+          <ActivityIndicator size="small" color={COLORS.primary} style={{ marginVertical: 10 }} />
+        ) : (
+          <View style={styles.categoryGrid}>
+            {accounts.map((account) => (
+              <TouchableOpacity
+                key={account.id}
+                style={[
+                  styles.categoryButton, // Reusing category styles for simplicity
+                  selectedAccount === account.id && styles.categoryButtonActive,
+                ]}
+                onPress={() => setSelectedAccount(account.id)}
+              >
+                <Ionicons
+                  name="card-outline"
+                  size={20}
+                  color={selectedAccount === account.id ? COLORS.white : COLORS.text}
+                  style={styles.categoryIcon}
+                />
+                <Text
+                  style={[
+                    styles.categoryButtonText,
+                    selectedAccount === account.id && styles.categoryButtonTextActive,
+                  ]}
+                >
+                  {account.name}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
+        {/* CATEGORY SELECTOR UI */}
+        <Text style={[styles.sectionTitle, { marginTop: 15 }]}>
           <Ionicons name="pricetag-outline" size={16} color={COLORS.text} /> Category
         </Text>
 
-        {/* DYNAMIC CATEGORY GRID */}
         {isCategoriesLoading ? (
            <ActivityIndicator size="small" color={COLORS.primary} style={{ marginVertical: 10 }} />
         ) : (
@@ -213,6 +240,12 @@ const CreateScreen = () => {
                 ]}
                 onPress={() => setSelectedCategory(category.name)}
               >
+                <Ionicons
+                  name={(category.icon || "ellipse") as keyof typeof Ionicons.glyphMap}
+                  size={20}
+                  color={selectedCategory === category.name ? COLORS.white : COLORS.text}
+                  style={styles.categoryIcon}
+                />
                 <Text
                   style={[
                     styles.categoryButtonText,
@@ -224,7 +257,6 @@ const CreateScreen = () => {
               </TouchableOpacity>
             ))}
 
-            {/* ADD NEW CATEGORY BUTTON */}
             {!isAddingCategory && (
               <TouchableOpacity
                 style={styles.categoryButton}
@@ -237,9 +269,8 @@ const CreateScreen = () => {
           </View>
         )}
 
-        {/* INLINE CATEGORY CREATION FORM */}
         {isAddingCategory && (
-          <View style={{ flexDirection: "row", alignItems: "center", marginTop: 15, paddingHorizontal: 5 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", marginTop: 15, paddingHorizontal: 5, paddingBottom: 20 }}>
             <TextInput
               style={[styles.input, { flex: 1, borderBottomWidth: 1, borderBottomColor: COLORS.textLight, paddingBottom: 5 }]}
               placeholder={`New ${isExpense ? 'Expense' : 'Income'} Category...`}
@@ -256,7 +287,7 @@ const CreateScreen = () => {
             </TouchableOpacity>
           </View>
         )}
-      </View>
+      </ScrollView>
 
       {isLoading && (
         <View style={styles.loadingContainer}>
