@@ -25,7 +25,7 @@ export async function getAccounts(req : Request, res : Response){
                 LEFT JOIN transactions t
                 ON t.account_id = a.id
 
-                WHERE a.user_id = $(userId)
+                WHERE a.user_id = ${userId}
                 GROUP BY a.id
                 ORDER BY a.created_at DESC
         `
