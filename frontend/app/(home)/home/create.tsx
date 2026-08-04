@@ -11,12 +11,12 @@ import { useRouter } from "expo-router";
 import { useUser } from "@clerk/expo";
 import { useState, useEffect } from "react";
 import { API_URL } from "@/constants/api";
-import { styles } from "../../assets/styles/create.styles";
-import { COLORS } from "../../constants/colors";
+import { styles } from "../../../assets/styles/create.styles";
+import { COLORS } from "../../../constants/colors";
 import { Ionicons } from "@expo/vector-icons";
 
-import { useCategories } from "../../hooks/useCategories"; 
-import { useAccounts } from "../../hooks/useAccounts"; // 1. Import new hook
+import { useCategories } from "../../../hooks/useCategories"; 
+import { useAccounts } from "../../../hooks/useAccounts"; // 1. Import new hook
 
 const CreateScreen = () => {
   const router = useRouter();
