@@ -4,12 +4,14 @@ import { styles } from "../assets/styles/home.styles";
 import { COLORS } from "../constants/colors";
 import { formatDate } from "@/utils/utils";
 
+// 1. Added the 'type' field to the interface
 interface Transaction {
   title: string;
   id: string;
   category: string;
   amount: number | string;
   created_at: string;
+  type: 'income' | 'expense'; 
 }
 
 interface TransactionItemProps {
@@ -28,7 +30,9 @@ const CATEGORY_ICONS: Record<string, any> = {
 };
 
 export const TransactionItem = ({ item, onDelete } : TransactionItemProps) => {
-  const isIncome = parseFloat(item.amount.toString()) > 0;
+  // 2. Updated the logic to check the new 'type' property directly
+  const isIncome = item.type === 'income'; 
+  
   const iconName = CATEGORY_ICONS[item.category] || "pricetag-outline";
 
   return (
