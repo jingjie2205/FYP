@@ -14,7 +14,7 @@ export async function getTransactionsByUserId(req : Request, res : Response) {
 
         res.status(200).json(transactions)
     } catch (e) {
-        console.error("Error creating transaction:", e);
+        console.error("Error fetching transactions:", e);
         res.status(500).json({ error: "Internal server error" });
     }
 }
@@ -71,8 +71,8 @@ export async function deleteTransaction (req : Request, res : Response) {
     try {
         const { id } = req.params
 
-        // Validate id before hitting sql query
-        if (isNaN(parseInt(id as string))) {
+        // FIX 4: Removed the parseInt() check. UUIDs are strings, so we just check if it exists.
+        if (!id) {
             return res.status(400).json({ message:"Invalid transaction ID" })
         }
 
@@ -85,9 +85,9 @@ export async function deleteTransaction (req : Request, res : Response) {
             return res.status(404).json({ message:"Transaction not found!" })
         }
 
-        res.status(200).json({ message:"Transactions deleted successfully" })
+        res.status(200).json({ message:"Transaction deleted successfully" })
     } catch (e) {
-        console.error("Error creating transaction:", e);
+        console.error("Error deleting transaction:", e);
         res.status(500).json({ error: "Internal server error" });
     }
 }
@@ -96,17 +96,31 @@ export async function getSummary (req : Request, res : Response) {
     try {
         const { userId } = req.params
 
+        // FIX 3: Calculate balance by dynamically checking the type
         const balanceResult = await sql `
-            SELECT COALESCE(SUM(amount), 0) as balance FROM transactions WHERE user_id = ${ userId }
+            SELECT COALESCE(SUM(
+                CASE 
+                    WHEN type = 'income' THEN amount 
+                    WHEN type = 'expense' THEN -amount 
+                    ELSE 0 
+                END
+            ), 0) as balance 
+            FROM transactions 
+            WHERE user_id = ${ userId }
         `
 
+        // FIX 2: Added user_id and type filters
         const incomeResult = await sql `
-            SELECT COALESCE(SUM(amount), 0) as income FROM transactions
+            SELECT COALESCE(SUM(amount), 0) as income 
+            FROM transactions
+            WHERE user_id = ${ userId } AND type = 'income'
         `
 
+        // FIX 1: Switched amount < 0 to type = 'expense'
         const expensesResult = await sql `
-            SELECT COALESCE(SUM(amount), 0) as expenses FROM transactions 
-            WHERE user_id = ${ userId } AND amount < 0
+            SELECT COALESCE(SUM(amount), 0) as expenses 
+            FROM transactions 
+            WHERE user_id = ${ userId } AND type = 'expense'
         `
 
         res.status(200).json({

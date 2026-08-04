@@ -49,15 +49,16 @@ const CreateScreen = () => {
     if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
       return Alert.alert("Error", "Please enter a valid amount");
     }
-    // 5. Add validation for account selection
     if (!selectedAccount) return Alert.alert("Error", "Please select an account");
     if (!selectedCategory) return Alert.alert("Error", "Please select a category");
 
     setIsLoading(true);
     try {
-      const formattedAmount = isExpense
-        ? -Math.abs(parseFloat(amount))
-        : Math.abs(parseFloat(amount));
+      // 1. The backend expects a POSITIVE number, so we just use the absolute value
+      const parsedAmount = Math.abs(parseFloat(amount));
+      
+      // 2. Generate the current date for the transaction_date requirement
+      const currentDate = new Date().toISOString();
 
       const response = await fetch(`${API_URL}/transactions`, {
         method: "POST",
@@ -66,10 +67,12 @@ const CreateScreen = () => {
         },
         body: JSON.stringify({
           user_id: user?.id,
-          account_id: selectedAccount, // 6. Include account_id in the payload
-          title,
-          amount: formattedAmount,
-          category: selectedCategory,
+          account_id: selectedAccount,
+          category_id: selectedCategory, // Swapped from "category" to "category_id"
+          title: title,
+          amount: parsedAmount,          // Now always a positive number
+          type: isExpense ? "expense" : "income", // Added the missing type field
+          transaction_date: currentDate, // Added the missing date field
         }),
       });
 
@@ -236,20 +239,17 @@ const CreateScreen = () => {
                 key={category.id}
                 style={[
                   styles.categoryButton,
-                  selectedCategory === category.name && styles.categoryButtonActive,
+                  // FIX 1: Compare against category.id, not category.name
+                  selectedCategory === category.id && styles.categoryButtonActive,
                 ]}
-                onPress={() => setSelectedCategory(category.name)}
+                // FIX 2: Save the category.id into state when pressed
+                onPress={() => setSelectedCategory(category.id)}
               >
-                <Ionicons
-                  name={(category.icon || "ellipse") as keyof typeof Ionicons.glyphMap}
-                  size={20}
-                  color={selectedCategory === category.name ? COLORS.white : COLORS.text}
-                  style={styles.categoryIcon}
-                />
                 <Text
                   style={[
                     styles.categoryButtonText,
-                    selectedCategory === category.name && styles.categoryButtonTextActive,
+                    // FIX 3: Compare against category.id here too
+                    selectedCategory === category.id && styles.categoryButtonTextActive,
                   ]}
                 >
                   {category.name}
@@ -266,25 +266,6 @@ const CreateScreen = () => {
                 <Text style={styles.categoryButtonText}>Add New</Text>
               </TouchableOpacity>
             )}
-          </View>
-        )}
-
-        {isAddingCategory && (
-          <View style={{ flexDirection: "row", alignItems: "center", marginTop: 15, paddingHorizontal: 5, paddingBottom: 20 }}>
-            <TextInput
-              style={[styles.input, { flex: 1, borderBottomWidth: 1, borderBottomColor: COLORS.textLight, paddingBottom: 5 }]}
-              placeholder={`New ${isExpense ? 'Expense' : 'Income'} Category...`}
-              placeholderTextColor={COLORS.textLight}
-              value={newCategoryName}
-              onChangeText={setNewCategoryName}
-              autoFocus
-            />
-            <TouchableOpacity onPress={handleAddNewCategory} style={{ marginLeft: 15 }}>
-              <Ionicons name="checkmark-circle" size={28} color={COLORS.primary} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setIsAddingCategory(false)} style={{ marginLeft: 10 }}>
-              <Ionicons name="close-circle" size={28} color={COLORS.expense} />
-            </TouchableOpacity>
           </View>
         )}
       </ScrollView>
