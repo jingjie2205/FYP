@@ -1,9 +1,9 @@
 import { Stack } from "expo-router";
 
-export default function TabStackLayout() {
+export default function RecurringLayout() {
   return (
     <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="Recurring index" />
+      <Stack.Screen name="index" />
     </Stack>
   );
 }

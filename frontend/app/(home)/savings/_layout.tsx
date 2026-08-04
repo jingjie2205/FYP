@@ -1,9 +1,9 @@
 import { Stack } from "expo-router";
 
-export default function TabStackLayout() {
+export default function SavingsLayout() {
   return (
     <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="Savings index" />
+      <Stack.Screen name="index" />
     </Stack>
   );
 }
