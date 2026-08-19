@@ -75,8 +75,8 @@ export default function HomeLayout() {
       />
 
       {/* Hide old loose files if any still exist */}
-      <Tabs.Screen name="index" options={{ href: null }} />
-      <Tabs.Screen name="ai" options={{ href: null }} />
+      {/* <Tabs.Screen name="index" options={{ href: null }} />
+      <Tabs.Screen name="ai" options={{ href: null }} /> */}
     </Tabs>
   );
 }
