@@ -1,13 +1,10 @@
 import { SignOutButton } from '@/components/sign-out-button'
-import { ThemedText } from '@/components/themed-text'
-import { ThemedView } from '@/components/themed-view'
-import { Show, useSession, useUser } from '@clerk/expo'
-import { Link } from 'expo-router'
-import { Alert, Text, TouchableOpacity, Image, View, FlatList, RefreshControl } from 'react-native'
+import { useSession, useUser } from '@clerk/expo'
+import { Alert, Text, TouchableOpacity, Image, View, FlatList, RefreshControl, StyleSheet } from 'react-native'
 import { useTransactions } from '@/hooks/useTransactions'
 import { useEffect, useState } from 'react'
 import PageLoader from '@/components/PageLoader'
-import { styles } from '@/assets/styles/home.styles'
+import { COLORS } from '@/constants/colors'
 import { Ionicons } from '@expo/vector-icons'
 import { useRouter } from 'expo-router'
 import { BalanceCard } from '@/components/BalanceCard'
@@ -44,34 +41,38 @@ export default function Page() {
   };
 
   return (
-    <View style={styles.container}>
-      <View style={styles.content}>
-        {/* { HEADER SECTION } */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <Image source={require('@/assets/images/icon.png')} style={styles.headerLogo} resizeMode="contain"/>
-            <View style={styles.welcomeContainer}>
-              <Text style={styles.welcomeText}>Welcome</Text>
-              <Text style={styles.usernameText}>{user?.emailAddresses[0]?.emailAddress.split('@')[0]}</Text>
-            </View>
+    <View style={localStyles.container}>
+      {/* HEADER SECTION */}
+      <View style={localStyles.header}>
+        <View style={localStyles.headerLeft}>
+          <Image source={require('@/assets/images/icon.png')} style={localStyles.headerLogo} resizeMode="contain"/>
+          <View style={localStyles.welcomeContainer}>
+            <Text style={localStyles.welcomeText}>Welcome</Text>
+            <Text style={localStyles.usernameText}>{user?.emailAddresses[0]?.emailAddress.split('@')[0]}</Text>
           </View>
         </View>
-        {/* { "RIGHT" } */}
-        <View style={styles.headerRight}>
-          <TouchableOpacity style={styles.addButton} onPress={() => router.push('/home/create')}>
-            <Ionicons name="add-circle-outline" size={24} color="#FFF" />
-            <Text style={styles.addButtonText}>Add</Text>
+        <View style={localStyles.headerRight}>
+          <TouchableOpacity style={localStyles.addSectionBtn} onPress={() => router.push('/home/create')}>
+            <Ionicons name="add" size={18} color="#FFF" />
+            <Text style={localStyles.addSectionBtnText}>Add</Text>
           </TouchableOpacity>
           <SignOutButton />
         </View>
       </View>
+
       <BalanceCard summary={summary} />
-      <View style={styles.transactionsHeaderContainer}>
-        <Text style={styles.sectionTitle}>Recent Transactions</Text>
+
+      {/* SECTION HEADER*/}
+      <View style={localStyles.sectionHeader}>
+        <View style={localStyles.sectionTitleWrap}>
+          <Text style={localStyles.sectionTitle}>Recent Transactions</Text>
+          <Text style={localStyles.sectionCount}>({transactions.length})</Text>
+        </View>
       </View>
+
       <FlatList
-        style={styles.transactionsList}
-        contentContainerStyle={styles.transactionsListContent}
+        style={localStyles.transactionsList}
+        contentContainerStyle={localStyles.transactionsListContent}
         data={transactions}
         renderItem={({ item }) => <TransactionItem item={item} onDelete={handleDelete}/>}
         ListEmptyComponent={<NoTransactionsFound />}
@@ -81,3 +82,89 @@ export default function Page() {
     </View>
   )
 }
+
+const localStyles = StyleSheet.create({
+  container: { 
+    flex: 1, 
+    backgroundColor: COLORS.background, 
+    paddingHorizontal: 16, 
+    paddingTop: 16 
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  headerLogo: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+  },
+  welcomeContainer: {
+    justifyContent: 'center',
+  },
+  welcomeText: {
+    fontSize: 11,
+    color: '#6B7280',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  usernameText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  addSectionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.primary,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    gap: 4,
+  },
+  addSectionBtnText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  sectionHeader: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    marginBottom: 12,
+    marginTop: 4,
+  },
+  sectionTitleWrap: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    gap: 6 
+  },
+  sectionTitle: { 
+    fontSize: 16, 
+    fontWeight: '700', 
+    color: COLORS.text 
+  },
+  sectionCount: { 
+    fontSize: 13, 
+    color: '#6B7280', 
+    fontWeight: '500' 
+  },
+  transactionsList: {
+    flex: 1,
+  },
+  transactionsListContent: {
+    paddingBottom: 40,
+  },
+});
