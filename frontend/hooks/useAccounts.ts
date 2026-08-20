@@ -19,7 +19,6 @@ export const useAccounts = (userId: string | undefined) => {
     
     setIsLoading(true);
     try {
-      // Adjust this endpoint if your routes are structured differently
       const response = await fetch(`${API_URL}/accounts/${userId}`);
       
       if (!response.ok) {
@@ -36,9 +35,40 @@ export const useAccounts = (userId: string | undefined) => {
     }
   }, [userId]);
 
+const createAccount = async (accountData: { name: string; type: string; balance: number }) => {
+    if (!userId) return false;
+
+    try {
+      const response = await fetch(`${API_URL}/accounts/${userId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: userId,
+          ...accountData,
+        }),
+      });
+
+      const responseText = await response.text();
+
+      if (!response.ok) {
+        console.error("Server error response:", responseText);
+        throw new Error(`Failed to create account: ${response.status}`);
+      }
+
+      const newAccount = JSON.parse(responseText);
+      setAccounts(prevAccounts => [...prevAccounts, newAccount]);
+      return true;
+    } catch (error) {
+      console.error('Error creating account:', error);
+      Alert.alert('Error', 'Could not create account.');
+      return false;
+    }
+  };
+
   return {
     accounts,
     isLoading,
     fetchAccounts,
+    createAccount,
   };
 };
