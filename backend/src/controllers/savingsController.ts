@@ -37,13 +37,6 @@ export async function createSavingsPlan(req: Request, res: Response) {
             return res.status(400).json({ error: "Missing required fields - name and target_amount" });
         }
 
-        // Ensure the user exists in the database to prevent foreign key violations
-        await sql`
-            INSERT INTO users (id) 
-            VALUES (${userId}) 
-            ON CONFLICT (id) DO NOTHING
-        `;
-
         const [newPlan] = await sql`
             INSERT INTO savings_plans (user_id, name, target_amount, saved_amount, deadline)
             VALUES (${userId}, ${name}, ${target_amount || 0}, ${saved_amount || 0}, ${deadline || null})
@@ -85,6 +78,7 @@ export async function updateSavingsPlan(req: Request, res: Response) {
     }
 }
 
+// DELETE a savings plan
 export async function deleteSavingsPlan(req: Request, res: Response) {
     try {
         const { id } = req.params;
