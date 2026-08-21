@@ -99,3 +99,31 @@ export async function deleteSavingsPlan(req: Request, res: Response) {
         res.status(500).json({ error: "Internal server error" });
     }
 }
+
+// ADD FUNDS to an existing savings plan
+export async function addSavingsFunds(req: Request, res: Response) {
+    try {
+        const { id } = req.params;
+        const { amount } = req.body;
+
+        if (amount === undefined || isNaN(amount) || amount <= 0) {
+            return res.status(400).json({ error: "Valid positive amount is required" });
+        }
+
+        const [updatedPlan] = await sql`
+            UPDATE savings_plans
+            SET saved_amount = saved_amount + ${amount}
+            WHERE id = ${id}
+            RETURNING *;
+        `;
+
+        if (!updatedPlan) {
+            return res.status(404).json({ error: "Savings plan not found" });
+        }
+
+        res.status(200).json(updatedPlan);
+    } catch (e) {
+        console.error("Error adding funds:", e);
+        res.status(500).json({ error: "Internal server error" });
+    }
+}
