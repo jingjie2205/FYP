@@ -3,12 +3,13 @@ import { Alert } from 'react-native';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
-// You can adjust this interface to match your database schema
 export interface Category {
   id: string;
+  user_id: string;
   name: string;
-  type: 'income' | 'expense';
-  icon?: string;
+  target_amount: number; // Assigned money
+  current_amount: number; // Available spendable money
+  created_at?: string;
 }
 
 export const useCategories = (userId: string | undefined) => {
@@ -24,10 +25,8 @@ export const useCategories = (userId: string | undefined) => {
       const response = await fetch(`${API_URL}/categories/${userId}`);
       
       if (!response.ok) {
-        // Temporarily add these two lines to see the REAL error in your terminal
         const errorText = await response.text();
         console.log("Fetch Categories Error Details:", response.status, errorText);
-        
         throw new Error('Failed to fetch categories');
       }
 
@@ -42,7 +41,7 @@ export const useCategories = (userId: string | undefined) => {
   }, [userId]);
 
   // 2. Create Category
-  const createCategory = async (categoryData: Omit<Category, 'id'>) => {
+  const createCategory = async (categoryData: Omit<Category, 'id' | 'current_amount'> & { target_amount?: number }) => {
     if (!userId) return;
 
     try {
@@ -59,27 +58,54 @@ export const useCategories = (userId: string | undefined) => {
       }
 
       const newCategory = await response.json();
-      
-      // Update local state immediately so the UI reflects the change without a refresh
       setCategories((prevCategories) => [...prevCategories, newCategory]);
-      
+      return true;
     } catch (error) {
       console.error('Error creating category:', error);
       Alert.alert('Error', 'Could not create category. Please try again.');
+      return false;
     }
   };
 
-  // 3. Delete Category
+  // 3. Update Category (supports updating name, target_amount, and current_amount)
+  const updateCategory = async (categoryId: string, updateData: Partial<Omit<Category, 'id' | 'user_id'>>) => {
+    try {
+      const response = await fetch(`${API_URL}/categories/${categoryId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updateData),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to update category');
+      }
+
+      const updatedCategory = await response.json();
+      
+      // Update local state smoothly
+      setCategories((prevCategories) =>
+        prevCategories.map((cat) => (cat.id === categoryId ? updatedCategory : cat))
+      );
+      return true;
+    } catch (error) {
+      console.error('Error updating category:', error);
+      Alert.alert('Error', 'Could not update category. Please try again.');
+      return false;
+    }
+  };
+
+  // 4. Delete Category
   const deleteCategory = async (categoryId: string) => {
     if (!userId) return;
 
     try {
-      const response = await fetch(`${API_URL}/api/categories/${categoryId}`, {
+      const response = await fetch(`${API_URL}/categories/${categoryId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
         },
-        // Passing userId in the body to ensure the backend verifies ownership before deleting
         body: JSON.stringify({ userId }), 
       });
 
@@ -87,11 +113,9 @@ export const useCategories = (userId: string | undefined) => {
         throw new Error('Failed to delete category');
       }
 
-      // Remove the deleted category from local state
       setCategories((prevCategories) => 
         prevCategories.filter((category) => category.id !== categoryId)
       );
-      
     } catch (error) {
       console.error('Error deleting category:', error);
       Alert.alert('Error', 'Could not delete category. Please try again.');
@@ -103,6 +127,7 @@ export const useCategories = (userId: string | undefined) => {
     isLoading,
     fetchCategories,
     createCategory,
+    updateCategory,
     deleteCategory,
   };
 };
