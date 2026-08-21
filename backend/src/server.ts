@@ -8,6 +8,7 @@ import categoriesRoute from "./routes/categoriesRoute.js"
 import budgetsRoute from "./routes/budgetsRoute.js"
 import accountsRoute from "./routes/accountsRoute.js"
 import recurringRoute from "./routes/recurringRoute.js"
+import savingsRoutes from "./routes/savingsRoute.js";
 import job from "./config/cron.js"
 
 dotenv.config();
@@ -44,6 +45,7 @@ app.use("/api/categories", categoriesRoute)
 app.use("/api/budgets", budgetsRoute)
 app.use("/api/accounts", accountsRoute)
 app.use("/api/recurring", recurringRoute)
+app.use("/api/savings", savingsRoutes);
 
 
 app.listen(PORT, () => {
