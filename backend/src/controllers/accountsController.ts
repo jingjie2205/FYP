@@ -6,12 +6,12 @@ export async function getAccounts(req : Request, res : Response){
     try {
         const { userId } = req.params
 
+        // Removed 'type' from SELECT
         const accounts = await sql`
             SELECT 
                 id,
                 user_id,
                 name,
-                type,
                 balance,
                 is_default,
                 created_at
@@ -49,17 +49,17 @@ export async function createAccount (req : Request, res : Response) {
 export async function updateAccount(req: Request, res: Response) {
     try {
         const { id } = req.params;
-        const { name, type, balance } = req.body;
+        const { name, balance } = req.body;
 
         if (!id) {
             return res.status(400).json({ error: "Account ID is required" });
         }
 
+        // Removed 'type' from UPDATE
         const [updatedAccount] = await sql`
             UPDATE accounts
             SET 
                 name = COALESCE(${name}, name),
-                type = COALESCE(${type}, type),
                 balance = COALESCE(${balance}, balance)
             WHERE id = ${id}
             RETURNING *;
