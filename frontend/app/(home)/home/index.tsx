@@ -12,15 +12,16 @@ import { TransactionItem } from '@/components/TransactionItem'
 import NoTransactionsFound from '@/components/NoTransactionsFound'
 
 const { width } = Dimensions.get('window');
+const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5000/api';
 
+// 1. Simplified Interface (Removed income/expense)
 interface CarouselAccountCard {
   id: string;
   name: string;
   type: string;
   balance: number;
-  income: number;
-  expense: number;
   isAddButton?: boolean;
+  isOverview?: boolean;
 }
 
 export default function Page() {
@@ -30,8 +31,9 @@ export default function Page() {
   const [refreshing, setRefreshing] = useState(false)
   const [activeAccountIndex, setActiveAccountIndex] = useState(0)
 
-  // Modal form states for creating a new account
+  // CRUD Modal States
   const [accountModalVisible, setAccountModalVisible] = useState(false)
+  const [editingAccount, setEditingAccount] = useState<CarouselAccountCard | null>(null)
   const [newAccountName, setNewAccountName] = useState('')
   const [newAccountBalance, setNewAccountBalance] = useState('')
   const [newAccountType, setNewAccountType] = useState('checking')
@@ -40,7 +42,6 @@ export default function Page() {
 
   const { 
     transactions, 
-    summary, 
     isLoading: isTransactionsLoading, 
     loadData: loadTransactions, 
     deleteTransaction 
@@ -72,84 +73,131 @@ export default function Page() {
     }
   }, [currentUserId, loadTransactions, fetchAccounts])
 
-  // Handle creating a new account using the hook function
-  const handleCreateAccount = async () => {
-    if (!newAccountName.trim()) return;
+  // --- CRUD HANDLERS ---
 
-    const success = await createAccount({
-      name: newAccountName.trim(),
-      type: newAccountType,
-      balance: parseFloat(newAccountBalance) || 0.00
-    });
+  const handleOpenCreateAccount = () => {
+    setEditingAccount(null);
+    setNewAccountName('');
+    setNewAccountType('checking');
+    setNewAccountBalance('');
+    setAccountModalVisible(true);
+  };
 
-    if (success) {
-      setNewAccountName('');
-      setNewAccountBalance('');
-      setNewAccountType('checking');
+  const handleOpenEditAccount = (account: CarouselAccountCard) => {
+    setEditingAccount(account);
+    setNewAccountName(account.name);
+    setNewAccountType(account.type || 'checking');
+    setNewAccountBalance(String(account.balance || 0));
+    setAccountModalVisible(true);
+  };
+
+  const handleSaveAccount = async () => {
+    if (!newAccountName.trim()) {
+      Alert.alert('Error', 'Please enter an account name.');
+      return;
+    }
+
+    try {
+      if (editingAccount) {
+        // UPDATE Existing Account
+        const response = await fetch(`${API_URL}/accounts/${editingAccount.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: newAccountName.trim(),
+            type: newAccountType,
+            balance: parseFloat(newAccountBalance) || 0,
+          }),
+        });
+
+        if (!response.ok) throw new Error('Failed to update account');
+        fetchAccounts(); // Refresh list
+      } else {
+        // CREATE New Account
+        const success = await createAccount({
+          name: newAccountName.trim(),
+          type: newAccountType,
+          balance: parseFloat(newAccountBalance) || 0
+        });
+        if (success) {
+          fetchAccounts();
+        }
+      }
       setAccountModalVisible(false);
-      fetchAccounts(); // Ensure local state syncs up
+    } catch (error) {
+      console.error('Error saving account:', error);
+      Alert.alert('Error', 'Could not save account details.');
     }
   };
 
-  // Build the list of carousel cards with dynamic income/expense/balance calculated from transactions
-  const accountCards: CarouselAccountCard[] = useMemo(() => {
-    const allTotalIncome = summary?.income ?? 0;
-    const allTotalExpense = summary?.expenses ?? 0;
-    const allTotalBalance = summary?.balance ?? 0;
+  const handleDeleteAccount = (accountId: string) => {
+    Alert.alert(
+      'Delete Account',
+      'Are you sure you want to delete this account? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Delete', 
+          style: 'destructive', 
+          onPress: async () => {
+            try {
+              const response = await fetch(`${API_URL}/accounts/${accountId}`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: currentUserId }) // Ensure ownership on backend if required
+              });
+              
+              if (!response.ok) throw new Error('Failed to delete account');
+              
+              setAccountModalVisible(false);
+              fetchAccounts(); // Refresh list
+            } catch (error) {
+              console.error('Error deleting account:', error);
+              Alert.alert('Error', 'Could not delete account.');
+            }
+          } 
+        }
+      ]
+    );
+  };
 
+  // --- CAROUSEL DATA ---
+
+  const accountCards: CarouselAccountCard[] = useMemo(() => {
+    // 1. Overview Card
+    const totalBalance = accounts.reduce((sum, acc: any) => sum + Number(acc.balance || 0), 0);
     const overviewCard: CarouselAccountCard = {
       id: 'all',
       name: 'All Accounts',
       type: 'Overview',
-      balance: allTotalBalance,
-      income: allTotalIncome,
-      expense: allTotalExpense,
+      balance: totalBalance,
+      isOverview: true
     };
 
-    const individualCards: CarouselAccountCard[] = accounts.map((acc: Account) => {
-      const accTransactions = (transactions as any[]).filter(t => t.account_id === acc.id);
-      
-      const accIncome = accTransactions
-        .filter(t => t.type === 'income')
-        .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+    // 2. Individual Cards
+    const individualCards: CarouselAccountCard[] = accounts.map((acc: any) => ({
+      id: acc.id,
+      name: acc.name,
+      type: acc.type ? acc.type.toUpperCase() : 'ACCOUNT',
+      balance: Number(acc.balance || 0),
+    }));
 
-      const accExpense = accTransactions
-        .filter(t => t.type === 'expense')
-        .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-
-      // Base starting balance from the database, defaulting to 0
-      const initialBalance = Number(acc.balance || 0);
-
-      // Live balance = Initial Balance + Total Income - Total Expenses
-      const liveBalance = initialBalance + accIncome - accExpense;
-
-      return {
-        id: acc.id,
-        name: acc.name,
-        type: acc.type ? acc.type.toUpperCase() : 'ACCOUNT',
-        balance: liveBalance,
-        income: Number(accIncome || 0),
-        expense: Number(accExpense || 0),
-      };
-    });
-
+    // 3. Add Account Action Card
     const addCard: CarouselAccountCard = {
       id: 'add-new-account',
       name: 'Add New Account',
       type: 'Action',
       balance: 0,
-      income: 0,
-      expense: 0,
       isAddButton: true
     };
 
     return [overviewCard, ...individualCards, addCard];
-  }, [accounts, transactions, summary]);
+  }, [accounts]);
 
   const isPageLoading = (isTransactionsLoading || isAccountsLoading) && !refreshing && isSignedIn;
   if (isPageLoading) return <PageLoader />
 
-  const handleDelete = (id : string) => {
+  const handleDeleteTransaction = (id: string) => {
     Alert.alert("Delete Transaction", "Are you sure you want to delete this transaction?", [
       { text: "Cancel", style: "cancel" },
       { text: "Delete", style: "destructive", onPress: () => deleteTransaction(id) },
@@ -158,7 +206,6 @@ export default function Page() {
 
   const activeAccount = accountCards[activeAccountIndex] || accountCards[0];
 
-  // Filter transactions based on the selected account card
   const filteredTransactions = activeAccount?.id === 'all' 
     ? transactions 
     : (transactions as any[]).filter(t => t.account_id === activeAccount?.id);
@@ -184,12 +231,15 @@ export default function Page() {
       </View>
 
       {/* BALANCE CARD CAROUSEL */}
-      <View style={localStyles.carouselContainer}>
+      <View style={[localStyles.carouselContainer, { marginHorizontal: -16 }]}>
         <FlatList
           data={accountCards}
           horizontal
-          pagingEnabled
           showsHorizontalScrollIndicator={false}
+          snapToInterval={(width - 32) + 16} // Card width + marginRight gap
+          snapToAlignment="start"
+          decelerationRate="fast"
+          contentContainerStyle={{ paddingHorizontal: 16 }} // Adds the edge padding back inside the scroll view
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
           keyExtractor={item => item.id}
@@ -198,7 +248,7 @@ export default function Page() {
               return (
                 <TouchableOpacity 
                   style={[localStyles.balanceCard, localStyles.addCardContainer, { width: width - 32 }]}
-                  onPress={() => setAccountModalVisible(true)}
+                  onPress={handleOpenCreateAccount}
                 >
                   <View style={localStyles.addIconCircle}>
                     <Ionicons name="add" size={28} color={COLORS.primary} />
@@ -212,28 +262,25 @@ export default function Page() {
             return (
               <View style={[localStyles.balanceCard, { width: width - 32 }]}>
                 <View style={localStyles.cardTopRow}>
-                  <Text style={localStyles.cardAccountName}>{item.name}</Text>
-                  <View style={localStyles.accountTypeBadge}>
-                    <Text style={localStyles.accountTypeText}>{item.type}</Text>
+                  <View style={localStyles.cardTopLeft}>
+                    <Text style={localStyles.cardAccountName}>{item.name}</Text>
+                    <View style={localStyles.accountTypeBadge}>
+                      <Text style={localStyles.accountTypeText}>{item.type}</Text>
+                    </View>
                   </View>
+                  
+                  {/* Show Edit Icon only on individual accounts */}
+                  {!item.isOverview && (
+                    <TouchableOpacity onPress={() => handleOpenEditAccount(item)} style={localStyles.editIconBtn}>
+                      <Ionicons name="ellipsis-horizontal" size={20} color="#9CA3AF" />
+                    </TouchableOpacity>
+                  )}
                 </View>
 
                 <Text style={localStyles.netAmount}>
                   ${Math.abs(item.balance || 0).toFixed(2)}
                   <Text style={localStyles.netSubtitle}> {(item.balance || 0) >= 0 ? 'Balance' : 'Debt'}</Text>
                 </Text>
-
-                <View style={localStyles.summaryRow}>
-                  <View>
-                    <Text style={localStyles.subLabel}>Account Income</Text>
-                    <Text style={localStyles.incomeText}>+${Number(item?.income || 0).toFixed(2)}</Text>
-                  </View>
-                  <View style={localStyles.divider} />
-                  <View>
-                    <Text style={localStyles.subLabel}>Account Expense</Text>
-                    <Text style={localStyles.expenseText}>-${Number(item?.expense || 0).toFixed(2)}</Text>
-                  </View>
-                </View>
               </View>
             );
           }}
@@ -256,7 +303,7 @@ export default function Page() {
       <View style={localStyles.sectionHeader}>
         <View style={localStyles.sectionTitleWrap}>
           <Text style={localStyles.sectionTitle}>
-            {activeAccount?.id === 'all' ? 'Recent Transactions' : activeAccount?.isAddButton ? 'Transactions' : `${activeAccount?.name} Transactions`}
+            {activeAccount?.isOverview ? 'Recent Transactions' : activeAccount?.isAddButton ? 'Transactions' : `${activeAccount?.name} Transactions`}
           </Text>
           <Text style={localStyles.sectionCount}>({activeAccount?.isAddButton ? 0 : filteredTransactions.length})</Text>
         </View>
@@ -266,17 +313,17 @@ export default function Page() {
         style={localStyles.transactionsList}
         contentContainerStyle={localStyles.transactionsListContent}
         data={activeAccount?.isAddButton ? [] : filteredTransactions}
-        renderItem={({ item }) => <TransactionItem item={item as any} onDelete={handleDelete}/>}
+        renderItem={({ item }) => <TransactionItem item={item as any} onDelete={handleDeleteTransaction}/>}
         ListEmptyComponent={<NoTransactionsFound />}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       />
 
-      {/* CREATE ACCOUNT MODAL */}
+      {/* CREATE / EDIT ACCOUNT MODAL */}
       <Modal visible={accountModalVisible} animationType="slide" transparent={true}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={localStyles.modalOverlay}>
           <View style={localStyles.modalContent}>
-            <Text style={localStyles.modalHeader}>Add New Account</Text>
+            <Text style={localStyles.modalHeader}>{editingAccount ? 'Edit Account' : 'Add New Account'}</Text>
             
             <Text style={localStyles.label}>Account Name</Text>
             <TextInput 
@@ -287,7 +334,16 @@ export default function Page() {
               onChangeText={setNewAccountName}
             />
             
-            <Text style={localStyles.label}>Initial Starting Balance ($)</Text>
+            <Text style={localStyles.label}>Account Type</Text>
+            <TextInput 
+              style={localStyles.input} 
+              placeholder="checking, savings, credit" 
+              placeholderTextColor="#9CA3AF"
+              value={newAccountType}
+              onChangeText={setNewAccountType}
+            />
+
+            <Text style={localStyles.label}>Account Balance ($)</Text>
             <TextInput 
               style={localStyles.input} 
               placeholder="0.00" 
@@ -301,10 +357,21 @@ export default function Page() {
               <TouchableOpacity style={localStyles.cancelBtn} onPress={() => setAccountModalVisible(false)}>
                 <Text style={localStyles.cancelText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={localStyles.saveBtn} onPress={handleCreateAccount}>
-                <Text style={localStyles.saveText}>Create Account</Text>
+              <TouchableOpacity style={localStyles.saveBtn} onPress={handleSaveAccount}>
+                <Text style={localStyles.saveText}>Save</Text>
               </TouchableOpacity>
             </View>
+
+            {/* Only show delete button if editing an existing account */}
+            {editingAccount && (
+              <TouchableOpacity 
+                style={localStyles.deleteBtnModal} 
+                onPress={() => handleDeleteAccount(editingAccount.id)}
+              >
+                <Text style={localStyles.deleteBtnText}>Delete Account</Text>
+              </TouchableOpacity>
+            )}
+
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -374,11 +441,12 @@ const localStyles = StyleSheet.create({
   balanceCard: { 
     backgroundColor: COLORS.card, 
     borderRadius: 16, 
-    padding: 18, 
+    padding: 22, 
     elevation: 2, 
     shadowColor: '#000', 
     shadowOpacity: 0.05, 
-    shadowRadius: 5 
+    shadowRadius: 5,
+    marginRight: 16, // Adds spacing between carousel items
   },
   addCardContainer: {
     justifyContent: 'center',
@@ -410,10 +478,15 @@ const localStyles = StyleSheet.create({
   cardTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  cardTopLeft: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 8
   },
   cardAccountName: { 
-    fontSize: 12, 
+    fontSize: 13, 
     color: '#6B7280', 
     fontWeight: '600', 
     textTransform: 'uppercase' 
@@ -429,44 +502,19 @@ const localStyles = StyleSheet.create({
     color: '#4B5563',
     fontWeight: '600',
   },
+  editIconBtn: {
+    padding: 4,
+  },
   netAmount: { 
-    fontSize: 26, 
+    fontSize: 32, 
     fontWeight: '700', 
-    marginVertical: 4,
+    marginTop: 16,
     color: COLORS.text
   },
   netSubtitle: { 
     fontSize: 13, 
     fontWeight: '400', 
     color: '#6B7280' 
-  },
-  summaryRow: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    marginTop: 12, 
-    borderTopWidth: 1, 
-    borderTopColor: '#F3F4F6', 
-    paddingTop: 10 
-  },
-  subLabel: { 
-    fontSize: 11, 
-    color: '#6B7280' 
-  },
-  incomeText: { 
-    fontSize: 14, 
-    fontWeight: '600', 
-    color: '#10B981', 
-    marginTop: 2 
-  },
-  expenseText: { 
-    fontSize: 14, 
-    fontWeight: '600', 
-    color: '#EF4444', 
-    marginTop: 2 
-  },
-  divider: { 
-    width: 1, 
-    backgroundColor: '#E5E7EB' 
   },
   paginationDots: {
     flexDirection: 'row',
@@ -572,4 +620,17 @@ const localStyles = StyleSheet.create({
     fontWeight: '600', 
     color: '#FFF' 
   },
+  deleteBtnModal: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: '#FEF2F2',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FEE2E2',
+  },
+  deleteBtnText: {
+    color: '#EF4444',
+    fontWeight: '600',
+  }
 });
