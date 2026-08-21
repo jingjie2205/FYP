@@ -24,7 +24,6 @@ interface CarouselAccountCard {
 }
 
 export default function Page() {
-  // 1. ALL HOOKS DECLARED AT THE TOP
   const { user, isLoaded, isSignedIn } = useUser()
   const router = useRouter()
   const { session } = useSession()
@@ -51,7 +50,7 @@ export default function Page() {
     accounts, 
     isLoading: isAccountsLoading, 
     fetchAccounts,
-    createAccount 
+    createAccount
   } = useAccounts(currentUserId)
 
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {

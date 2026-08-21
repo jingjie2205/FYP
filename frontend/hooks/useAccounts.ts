@@ -35,7 +35,7 @@ export const useAccounts = (userId: string | undefined) => {
     }
   }, [userId]);
 
-const createAccount = async (accountData: { name: string; type: string; balance: number }) => {
+  const createAccount = async (accountData: { name: string; type: string; balance: number }) => {
     if (!userId) return false;
 
     try {
