@@ -1,28 +1,18 @@
 import { SignOutButton } from '@/components/sign-out-button'
 import { useSession, useUser } from '@clerk/expo'
-import { Alert, Text, TouchableOpacity, Image, View, FlatList, RefreshControl, StyleSheet, Dimensions, Modal, TextInput, KeyboardAvoidingView, Platform } from 'react-native'
+import { Alert, Text, TouchableOpacity, Image, View, FlatList, RefreshControl, StyleSheet, Modal, TextInput, KeyboardAvoidingView, Platform } from 'react-native'
 import { useTransactions } from '@/hooks/useTransactions'
-import { useAccounts, Account } from '@/hooks/useAccounts'
-import { useEffect, useState, useRef, useMemo } from 'react'
+import { useAccounts } from '@/hooks/useAccounts'
+import { useEffect, useState, useMemo } from 'react'
 import PageLoader from '@/components/PageLoader'
 import { COLORS } from '@/constants/colors'
 import { Ionicons } from '@expo/vector-icons'
 import { useRouter } from 'expo-router'
 import { TransactionItem } from '@/components/TransactionItem'
 import NoTransactionsFound from '@/components/NoTransactionsFound'
+import { AccountCarousel, CarouselAccountCard } from '@/components/AccountCarousel'
 
-const { width } = Dimensions.get('window');
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5000/api';
-
-// 1. Simplified Interface (Removed income/expense)
-interface CarouselAccountCard {
-  id: string;
-  name: string;
-  type: string;
-  balance: number;
-  isAddButton?: boolean;
-  isOverview?: boolean;
-}
 
 export default function Page() {
   const { user, isLoaded, isSignedIn } = useUser()
@@ -51,14 +41,10 @@ export default function Page() {
     accounts, 
     isLoading: isAccountsLoading, 
     fetchAccounts,
-    createAccount
-  } = useAccounts(currentUserId)
-
-  const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
-    if (viewableItems.length > 0 && viewableItems[0].index !== null) {
-      setActiveAccountIndex(viewableItems[0].index);
-    }
-  }).current;
+    createAccount,
+    updateAccount,
+    deleteAccount
+  } = useAccounts(currentUserId);
 
   const onRefresh = async () => {
     setRefreshing(true)
@@ -72,8 +58,6 @@ export default function Page() {
       fetchAccounts();
     }
   }, [currentUserId, loadTransactions, fetchAccounts])
-
-  // --- CRUD HANDLERS ---
 
   const handleOpenCreateAccount = () => {
     setEditingAccount(null);
@@ -97,36 +81,18 @@ export default function Page() {
       return;
     }
 
-    try {
-      if (editingAccount) {
-        // UPDATE Existing Account
-        const response = await fetch(`${API_URL}/accounts/${editingAccount.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: newAccountName.trim(),
-            type: newAccountType,
-            balance: parseFloat(newAccountBalance) || 0,
-          }),
-        });
+    const payload = {
+      name: newAccountName.trim(),
+      type: newAccountType,
+      balance: parseFloat(newAccountBalance) || 0,
+    };
 
-        if (!response.ok) throw new Error('Failed to update account');
-        fetchAccounts(); // Refresh list
-      } else {
-        // CREATE New Account
-        const success = await createAccount({
-          name: newAccountName.trim(),
-          type: newAccountType,
-          balance: parseFloat(newAccountBalance) || 0
-        });
-        if (success) {
-          fetchAccounts();
-        }
-      }
+    const success = editingAccount
+      ? await updateAccount(editingAccount.id, payload)
+      : await createAccount(payload);
+
+    if (success) {
       setAccountModalVisible(false);
-    } catch (error) {
-      console.error('Error saving account:', error);
-      Alert.alert('Error', 'Could not save account details.');
     }
   };
 
@@ -140,20 +106,9 @@ export default function Page() {
           text: 'Delete', 
           style: 'destructive', 
           onPress: async () => {
-            try {
-              const response = await fetch(`${API_URL}/accounts/${accountId}`, {
-                method: 'DELETE',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userId: currentUserId }) // Ensure ownership on backend if required
-              });
-              
-              if (!response.ok) throw new Error('Failed to delete account');
-              
+            const success = await deleteAccount(accountId);
+            if (success) {
               setAccountModalVisible(false);
-              fetchAccounts(); // Refresh list
-            } catch (error) {
-              console.error('Error deleting account:', error);
-              Alert.alert('Error', 'Could not delete account.');
             }
           } 
         }
@@ -161,10 +116,14 @@ export default function Page() {
     );
   };
 
-  // --- CAROUSEL DATA ---
+  const handleDeleteTransaction = (id: string) => {
+  Alert.alert("Delete Transaction", "Are you sure you want to delete this transaction?", [
+    { text: "Cancel", style: "cancel" },
+    { text: "Delete", style: "destructive", onPress: () => deleteTransaction(id) },
+  ]);
+  };
 
   const accountCards: CarouselAccountCard[] = useMemo(() => {
-    // 1. Overview Card
     const totalBalance = accounts.reduce((sum, acc: any) => sum + Number(acc.balance || 0), 0);
     const overviewCard: CarouselAccountCard = {
       id: 'all',
@@ -174,7 +133,6 @@ export default function Page() {
       isOverview: true
     };
 
-    // 2. Individual Cards
     const individualCards: CarouselAccountCard[] = accounts.map((acc: any) => ({
       id: acc.id,
       name: acc.name,
@@ -182,7 +140,6 @@ export default function Page() {
       balance: Number(acc.balance || 0),
     }));
 
-    // 3. Add Account Action Card
     const addCard: CarouselAccountCard = {
       id: 'add-new-account',
       name: 'Add New Account',
@@ -196,13 +153,6 @@ export default function Page() {
 
   const isPageLoading = (isTransactionsLoading || isAccountsLoading) && !refreshing && isSignedIn;
   if (isPageLoading) return <PageLoader />
-
-  const handleDeleteTransaction = (id: string) => {
-    Alert.alert("Delete Transaction", "Are you sure you want to delete this transaction?", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: () => deleteTransaction(id) },
-    ]);
-  };
 
   const activeAccount = accountCards[activeAccountIndex] || accountCards[0];
 
@@ -222,82 +172,18 @@ export default function Page() {
           </View>
         </View>
         <View style={localStyles.headerRight}>
-          <TouchableOpacity style={localStyles.addSectionBtn} onPress={() => router.push('/home/create')}>
-            <Ionicons name="add" size={18} color="#FFF" />
-            <Text style={localStyles.addSectionBtnText}>Add</Text>
-          </TouchableOpacity>
           <SignOutButton />
         </View>
       </View>
 
-      {/* BALANCE CARD CAROUSEL */}
-      <View style={[localStyles.carouselContainer, { marginHorizontal: -16 }]}>
-        <FlatList
-          data={accountCards}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          snapToInterval={(width - 32) + 16} // Card width + marginRight gap
-          snapToAlignment="start"
-          decelerationRate="fast"
-          contentContainerStyle={{ paddingHorizontal: 16 }} // Adds the edge padding back inside the scroll view
-          onViewableItemsChanged={onViewableItemsChanged}
-          viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
-          keyExtractor={item => item.id}
-          renderItem={({ item }) => {
-            if (item.isAddButton) {
-              return (
-                <TouchableOpacity 
-                  style={[localStyles.balanceCard, localStyles.addCardContainer, { width: width - 32 }]}
-                  onPress={handleOpenCreateAccount}
-                >
-                  <View style={localStyles.addIconCircle}>
-                    <Ionicons name="add" size={28} color={COLORS.primary} />
-                  </View>
-                  <Text style={localStyles.addCardTitle}>Add New Account</Text>
-                  <Text style={localStyles.addCardSubtitle}>Tap to configure a new bank, wallet or card</Text>
-                </TouchableOpacity>
-              );
-            }
-
-            return (
-              <View style={[localStyles.balanceCard, { width: width - 32 }]}>
-                <View style={localStyles.cardTopRow}>
-                  <View style={localStyles.cardTopLeft}>
-                    <Text style={localStyles.cardAccountName}>{item.name}</Text>
-                    <View style={localStyles.accountTypeBadge}>
-                      <Text style={localStyles.accountTypeText}>{item.type}</Text>
-                    </View>
-                  </View>
-                  
-                  {/* Show Edit Icon only on individual accounts */}
-                  {!item.isOverview && (
-                    <TouchableOpacity onPress={() => handleOpenEditAccount(item)} style={localStyles.editIconBtn}>
-                      <Ionicons name="ellipsis-horizontal" size={20} color="#9CA3AF" />
-                    </TouchableOpacity>
-                  )}
-                </View>
-
-                <Text style={localStyles.netAmount}>
-                  ${Math.abs(item.balance || 0).toFixed(2)}
-                  <Text style={localStyles.netSubtitle}> {(item.balance || 0) >= 0 ? 'Balance' : 'Debt'}</Text>
-                </Text>
-              </View>
-            );
-          }}
-        />
-
-        {/* Carousel Pagination Dots */}
-        {accountCards.length > 1 && (
-          <View style={localStyles.paginationDots}>
-            {accountCards.map((_, idx) => (
-              <View 
-                key={idx} 
-                style={[localStyles.dot, activeAccountIndex === idx && localStyles.activeDot]} 
-              />
-            ))}
-          </View>
-        )}
-      </View>
+      {/* EXTRACTED CAROUSEL COMPONENT */}
+      <AccountCarousel
+        cards={accountCards}
+        activeIndex={activeAccountIndex}
+        onSelectIndex={setActiveAccountIndex}
+        onOpenCreate={handleOpenCreateAccount}
+        onOpenEdit={handleOpenEditAccount}
+      />
 
       {/* SECTION HEADER */}
       <View style={localStyles.sectionHeader}>
@@ -306,6 +192,10 @@ export default function Page() {
             {activeAccount?.isOverview ? 'Recent Transactions' : activeAccount?.isAddButton ? 'Transactions' : `${activeAccount?.name} Transactions`}
           </Text>
           <Text style={localStyles.sectionCount}>({activeAccount?.isAddButton ? 0 : filteredTransactions.length})</Text>
+          <TouchableOpacity style={localStyles.addSectionBtn} onPress={() => router.push('/home/create')}>
+            <Ionicons name="add" size={18} color="#FFF" />
+            <Text style={localStyles.addSectionBtnText}>Add</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -362,7 +252,6 @@ export default function Page() {
               </TouchableOpacity>
             </View>
 
-            {/* Only show delete button if editing an existing account */}
             {editingAccount && (
               <TouchableOpacity 
                 style={localStyles.deleteBtnModal} 
@@ -371,7 +260,6 @@ export default function Page() {
                 <Text style={localStyles.deleteBtnText}>Delete Account</Text>
               </TouchableOpacity>
             )}
-
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -434,104 +322,6 @@ const localStyles = StyleSheet.create({
     color: '#FFF',
     fontSize: 12,
     fontWeight: '600',
-  },
-  carouselContainer: {
-    marginBottom: 12,
-  },
-  balanceCard: { 
-    backgroundColor: COLORS.card, 
-    borderRadius: 16, 
-    padding: 22, 
-    elevation: 2, 
-    shadowColor: '#000', 
-    shadowOpacity: 0.05, 
-    shadowRadius: 5,
-    marginRight: 16, // Adds spacing between carousel items
-  },
-  addCardContainer: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    height: 135,
-    borderStyle: 'dashed',
-    borderWidth: 2,
-    borderColor: '#D1D5DB'
-  },
-  addIconCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#F3F4F6',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 6
-  },
-  addCardTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: COLORS.text
-  },
-  addCardSubtitle: {
-    fontSize: 11,
-    color: '#9CA3AF',
-    marginTop: 2
-  },
-  cardTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  cardTopLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8
-  },
-  cardAccountName: { 
-    fontSize: 13, 
-    color: '#6B7280', 
-    fontWeight: '600', 
-    textTransform: 'uppercase' 
-  },
-  accountTypeBadge: {
-    backgroundColor: '#F3F4F6',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  accountTypeText: {
-    fontSize: 10,
-    color: '#4B5563',
-    fontWeight: '600',
-  },
-  editIconBtn: {
-    padding: 4,
-  },
-  netAmount: { 
-    fontSize: 32, 
-    fontWeight: '700', 
-    marginTop: 16,
-    color: COLORS.text
-  },
-  netSubtitle: { 
-    fontSize: 13, 
-    fontWeight: '400', 
-    color: '#6B7280' 
-  },
-  paginationDots: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 8,
-  },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#D1D5DB',
-  },
-  activeDot: {
-    width: 16,
-    backgroundColor: COLORS.primary,
   },
   sectionHeader: { 
     flexDirection: 'row', 
