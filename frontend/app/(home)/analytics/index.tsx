@@ -1,406 +1,612 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { 
-  StyleSheet, 
-  Text, 
-  View, 
-  TouchableOpacity, 
-  SafeAreaView, 
-  ActivityIndicator, 
-  Alert,
-  FlatList
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  Dimensions,
+  ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
-import { useUser } from '@clerk/expo'
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { BarChart, PieChart, LineChart } from 'react-native-gifted-charts';
 import { Ionicons } from '@expo/vector-icons';
-import { useCategories, Category } from '../../../hooks/useCategories';
+import { useUser } from '@clerk/expo';
+import { useTransactions } from '@/hooks/useTransactions';
+import { useCategories } from '@/hooks/useCategories';
+import { useSavings } from '@/hooks/useSavings';
 import { COLORS } from '@/constants/colors';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL;
+const { width } = Dimensions.get('window');
+const CHART_WIDTH = width - 64;
 
-export default function PlanScreen() {
-  const { user } = useUser();
-  const userId = user?.id;
+const PALETTE = [
+  '#3B82F6', '#10B981', '#F59E0B', '#EF4444', 
+  '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16'
+];
 
-  const [activeTab, setActiveTab] = useState<'spending' | 'savings'>('spending');
-  const [totalAccountsBalance, setTotalAccountsBalance] = useState(0);
-  const [savingsPlans, setSavingsPlans] = useState<any[]>([]);
-  const [loadingSavings, setLoadingSavings] = useState(false);
+type TimeRange = '1M' | '3M' | '6M' | 'ALL';
 
-  const { categories, isLoading: categoriesLoading, fetchCategories } = useCategories(userId);
+export default function AnalyticsScreen() {
+  const { user, isLoaded: isUserLoaded, isSignedIn } = useUser();
+  const userId = isUserLoaded && isSignedIn ? user?.id : undefined;
 
-  // 1. Fetch all accounts balance to calculate the master cash pool
-  const fetchAccountsBalance = useCallback(async () => {
-    if (!userId) return;
-    try {
-      const response = await fetch(`${API_URL}/accounts/${userId}`);
-      if (!response.ok) throw new Error('Failed to fetch accounts');
-      const accounts = await response.json();
-      
-      const sum = accounts.reduce((acc: number, curr: any) => acc + Number(curr.balance || 0), 0);
-      setTotalAccountsBalance(sum);
-    } catch (error) {
-      console.error('Error fetching accounts for pool calculation:', error);
-    }
-  }, [userId]);
+  const [timeRange, setTimeRange] = useState<TimeRange>('1M');
+  const [refreshing, setRefreshing] = useState(false);
+  const [chartMode, setChartMode] = useState<'spending' | 'budget'>('spending');
 
-  // 2. Fetch savings goals for the savings tab
-  const fetchSavingsPlans = useCallback(async () => {
-    if (!userId) return;
-    try {
-      setLoadingSavings(true);
-      const response = await fetch(`${API_URL}/savings/${userId}`); // Adjust to your actual savings endpoint route
-      if (!response.ok) throw new Error('Failed to fetch savings');
-      const data = await response.json();
-      setSavingsPlans(data);
-    } catch (error) {
-      console.error('Error fetching savings:', error);
-    } finally {
-      setLoadingSavings(false);
-    }
-  }, [userId]);
+  // Custom Hooks
+  const { 
+    transactions = [], 
+    isLoading: isTxLoading, 
+    loadData: fetchTx 
+  } = useTransactions(userId);
 
+  const { 
+    categories = [], 
+    isLoading: isCatLoading, 
+    fetchCategories 
+  } = useCategories(userId);
+
+  const { 
+    savingsPlans = [], 
+    isLoading: isSavLoading, 
+    fetchSavings 
+  } = useSavings(userId);
+
+  // Trigger initial data load when user session resolves
   useEffect(() => {
     if (userId) {
-      fetchAccountsBalance();
+      fetchTx();
       fetchCategories();
-      fetchSavingsPlans();
+      fetchSavings();
     }
-  }, [userId, fetchAccountsBalance, fetchCategories, fetchSavingsPlans]);
+  }, [userId, fetchTx, fetchCategories, fetchSavings]);
 
-  // Dynamic Ready to Assign Calculation:
-  // Total Cash across Accounts - (Sum of all category targets + Sum of all savings allocations)
-  const totalAllocatedCategories = categories.reduce((sum, cat) => sum + Number(cat.target_amount || 0), 0);
-  const totalAllocatedSavings = savingsPlans.reduce((sum, plan) => sum + Number(plan.saved_amount || plan.target_amount || 0), 0);
-  const availablePool = totalAccountsBalance - (totalAllocatedCategories + totalAllocatedSavings);
+  const onRefresh = useCallback(async () => {
+    if (!userId) return;
+    setRefreshing(true);
+    await Promise.all([fetchTx(), fetchCategories(), fetchSavings()]);
+    setRefreshing(false);
+  }, [userId, fetchTx, fetchCategories, fetchSavings]);
 
-  const handleCreateNew = () => {
-    if (activeTab === 'spending') {
-      Alert.alert('Create Category', 'Trigger spending category creation flow here.');
-    } else {
-      Alert.alert('Create Savings Goal', 'Trigger savings plan creation flow here.');
+  const hasTransactions = transactions.length > 0;
+  const hasCategories = categories.length > 0;
+
+  // 1. Donut / Pie Chart Data
+  const pieChartData = useMemo(() => {
+    if (hasTransactions && chartMode === 'spending') {
+      const expenses = transactions.filter((t: any) => t.type === 'expense');
+      const spendingByCat: Record<string, number> = {};
+
+      expenses.forEach((t: any) => {
+        const catName = categories.find((c) => c.id === t.category_id)?.name || 'General';
+        spendingByCat[catName] = (spendingByCat[catName] || 0) + Number(t.amount || 0);
+      });
+
+      const items = Object.keys(spendingByCat).map((name, i) => ({
+        value: spendingByCat[name],
+        text: `${spendingByCat[name].toFixed(0)}`,
+        color: PALETTE[i % PALETTE.length],
+        label: name,
+      }));
+
+      return items.length > 0 
+        ? items 
+        : [{ value: 1, text: '0', color: '#E5E7EB', label: 'No Expenses' }];
     }
-  };
 
-  const renderCategoryItem = ({ item }: { item: Category }) => {
-    const target = Number(item.target_amount) || 0;
-    const current = Number(item.current_amount) || 0;
-    const spent = Math.max(0, target - current);
-    
-    const targetSafe = target > 0 ? target : 1;
-    const spentPercentage = Math.min(100, Math.max(0, (spent / targetSafe) * 100));
-    const remainingPercentage = Math.min(100, Math.max(0, (current / targetSafe) * 100));
+    // Default or Fallback for new accounts: Planned Envelope Allocation
+    if (categories.length > 0) {
+      return categories.map((cat, i) => ({
+        value: Number(cat.target_amount) > 0 ? Number(cat.target_amount) : 1,
+        text: `${cat.name}`,
+        color: PALETTE[i % PALETTE.length],
+        label: cat.name,
+      }));
+    }
 
+    return [{ value: 1, text: '0', color: '#E5E7EB', label: 'No Data' }];
+  }, [hasTransactions, chartMode, transactions, categories]);
+
+  const totalDonutValue = pieChartData.reduce((sum, item) => sum + (item.label !== 'No Data' ? item.value : 0), 0);
+
+  // 2. Grouped Bar Chart Data: Target vs Actual Spent
+  const groupedBarData = useMemo(() => {
+    const data: any[] = [];
+    categories.slice(0, 5).forEach((cat) => {
+      const target = Number(cat.target_amount || 0);
+      const spent = Math.max(0, target - Number(cat.current_amount || 0));
+
+      data.push({
+        value: target,
+        label: cat.name.length > 6 ? `${cat.name.slice(0, 5)}…` : cat.name,
+        spacing: 4,
+        labelWidth: 50,
+        labelTextStyle: { color: '#6B7280', fontSize: 10 },
+        frontColor: '#93C5FD',
+      });
+      data.push({
+        value: spent,
+        frontColor: COLORS.primary,
+      });
+    });
+    return data;
+  }, [categories]);
+
+  // 3. Cash Flow Trajectory Line Data
+  const lineChartData = useMemo(() => {
+    if (!hasTransactions) {
+      return [
+        { value: 0, label: 'W1' },
+        { value: 0, label: 'W2' },
+        { value: 0, label: 'W3' },
+        { value: 0, label: 'W4' },
+      ];
+    }
+
+    const sorted = [...transactions].sort(
+      (a: any, b: any) => new Date(a.transaction_date).getTime() - new Date(b.transaction_date).getTime()
+    );
+
+    let cumulative = 0;
+    return sorted.slice(-8).map((t: any, idx) => {
+      const amt = Number(t.amount || 0);
+      cumulative += t.type === 'income' ? amt : -amt;
+      return {
+        value: cumulative,
+        label: `D${idx + 1}`,
+      };
+    });
+  }, [transactions, hasTransactions]);
+
+  // Only lock with full-screen spinner if Clerk user hasn't loaded yet
+  if (!isUserLoaded) {
     return (
-      <View style={styles.card}>
-        <View style={styles.cardTop}>
-          <View>
-            <Text style={styles.planName}>{item.name}</Text>
-            <Text style={styles.deadlineText}>
-              Spent: <Text style={{ color: '#EF4444', fontWeight: '600' }}>${spent.toFixed(2)}</Text>
-            </Text>
-          </View>
-          <Text style={styles.savedText}>${target.toFixed(2)}</Text>
-        </View>
-
-        {/* Split Bar Chart: Red for spent, Green for remaining */}
-        <View style={styles.barBackground}>
-          <View style={[styles.redSpentBar, { width: `${spentPercentage}%` }]} />
-          <View style={[styles.greenRemainingBar, { width: `${remainingPercentage}%` }]} />
-        </View>
-
-        <View style={styles.cardFooter}>
-          <Text style={styles.targetSubText}>
-            Available: <Text style={{ color: current < 0 ? '#EF4444' : COLORS.primary, fontWeight: '700' }}>${current.toFixed(2)}</Text>
-          </Text>
-        </View>
+      <View style={[styles.container, styles.center]}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
       </View>
     );
-  };
+  }
 
-  const renderSavingsItem = ({ item }: { item: any }) => {
-    const target = Number(item.target_amount) || 1;
-    const saved = Number(item.saved_amount) || 0;
-    const percentage = Math.min(100, Math.max(0, (saved / target) * 100));
+  const isInitialLoading = (isTxLoading || isCatLoading || isSavLoading) && !refreshing && !hasCategories && !hasTransactions;
 
+  if (isInitialLoading) {
     return (
-      <View style={styles.card}>
-        <View style={styles.cardTop}>
-          <View>
-            <Text style={styles.planName}>{item.name || item.title}</Text>
-            <Text style={styles.deadlineText}>Target: ${target.toFixed(2)}</Text>
-          </View>
-          <Text style={styles.percentageText}>{percentage.toFixed(0)}%</Text>
-        </View>
-
-        <View style={styles.amountRow}>
-          <Text style={styles.savedText}>${saved.toFixed(2)}</Text>
-        </View>
-
-        <View style={styles.progressBarBackground}>
-          <View style={[styles.progressBarFill, { width: `${percentage}%` }]} />
-        </View>
+      <View style={[styles.container, styles.center]}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
       </View>
     );
-  };
+  }
 
   return (
-    <SafeAreaView style={styles.container}>
-      {/* 1. READY TO ASSIGN POOL HEADER */}
-      <View style={styles.poolCard}>
-        <Text style={styles.poolTitle}>Ready to Assign</Text>
-        <Text style={[
-          styles.poolAmount, 
-          { color: availablePool < 0 ? '#EF4444' : COLORS.primary }
-        ]}>
-          ${availablePool.toFixed(2)}
-        </Text>
-        <Text style={styles.poolSubtitle}>
-          From total cash: ${totalAccountsBalance.toFixed(2)}
-        </Text>
-      </View>
-
-      {/* 2. TAB SWITCHER & ACTION BUTTON */}
-      <View style={styles.tabActionRow}>
-        <View style={styles.tabContainer}>
-          <TouchableOpacity 
-            style={[styles.tab, activeTab === 'spending' && styles.activeTab]} 
-            onPress={() => setActiveTab('spending')}
-          >
-            <Text style={[styles.tabText, activeTab === 'spending' && styles.activeTabText]}>
-              Spending
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={[styles.tab, activeTab === 'savings' && styles.activeTab]} 
-            onPress={() => setActiveTab('savings')}
-          >
-            <Text style={[styles.tabText, activeTab === 'savings' && styles.activeTabText]}>
-              Savings
-            </Text>
-          </TouchableOpacity>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      {/* Header */}
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.headerTitle}>Financial Analytics</Text>
+          <Text style={styles.headerSub}>
+            {!hasTransactions ? 'Projected Envelope Allocations' : 'Real-Time Portfolio Insights'}
+          </Text>
         </View>
 
-        <TouchableOpacity style={styles.addBtn} onPress={handleCreateNew}>
-          <Ionicons name="add" size={16} color="#FFF" />
-          <Text style={styles.addBtnText}>Add</Text>
-        </TouchableOpacity>
+        <View style={styles.timeFilterWrap}>
+          {(['1M', '3M', '6M', 'ALL'] as TimeRange[]).map((range) => (
+            <TouchableOpacity
+              key={range}
+              style={[styles.timeBtn, timeRange === range && styles.timeBtnActive]}
+              onPress={() => setTimeRange(range)}
+            >
+              <Text style={[styles.timeBtnText, timeRange === range && styles.timeBtnTextActive]}>
+                {range}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
       </View>
 
-      {/* 3. CONDITIONAL TAB CONTENT CONTAINER */}
-      <View style={styles.contentContainer}>
-        {activeTab === 'spending' ? (
-          categoriesLoading ? (
-            <ActivityIndicator size="large" color={COLORS.primary} style={{ marginTop: 40 }} />
-          ) : categories.length === 0 ? (
-            <View style={styles.emptyContainer}>
-              <Ionicons name="wallet-outline" size={48} color="#9CA3AF" />
-              <Text style={styles.emptyText}>No spending categories found. Create one to start budgeting!</Text>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
+        {/* Onboarding Banner for zero transactions */}
+        {!hasTransactions && (
+          <View style={styles.welcomeBanner}>
+            <View style={styles.bannerIconWrap}>
+              <Ionicons name="sparkles" size={20} color={COLORS.primary} />
             </View>
-          ) : (
-            <FlatList 
-              data={categories}
-              keyExtractor={(item) => item.id}
-              renderItem={renderCategoryItem}
-              contentContainerStyle={styles.listContent}
-              showsVerticalScrollIndicator={false}
-            />
-          )
-        ) : (
-          loadingSavings ? (
-            <ActivityIndicator size="large" color={COLORS.primary} style={{ marginTop: 40 }} />
-          ) : savingsPlans.length === 0 ? (
-            <View style={styles.emptyContainer}>
-              <Ionicons name="shield-checkmark-outline" size={48} color="#9CA3AF" />
-              <Text style={styles.emptyText}>No savings goals found. Create one to track your savings!</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.bannerTitle}>Budget Projections Active</Text>
+              <Text style={styles.bannerSubtitle}>
+                No transactions recorded yet. Graphs are displaying projections based on your planned targets.
+              </Text>
             </View>
-          ) : (
-            <FlatList 
-              data={savingsPlans}
-              keyExtractor={(item) => item.id}
-              renderItem={renderSavingsItem}
-              contentContainerStyle={styles.listContent}
-              showsVerticalScrollIndicator={false}
-            />
-          )
+          </View>
         )}
-      </View>
+
+        {/* 1. Donut Chart Card */}
+        <View style={styles.card}>
+          <View style={styles.cardHeaderRow}>
+            <View>
+              <Text style={styles.cardTitle}>
+                {chartMode === 'spending' && hasTransactions ? 'Category Spending' : 'Envelope Distribution'}
+              </Text>
+              <Text style={styles.cardSubtitle}>
+                {chartMode === 'spending' && hasTransactions ? 'Actual expenses' : 'Planned budget proportions'}
+              </Text>
+            </View>
+
+            {hasTransactions && (
+              <TouchableOpacity
+                style={styles.togglePill}
+                onPress={() => setChartMode(chartMode === 'spending' ? 'budget' : 'spending')}
+              >
+                <Text style={styles.togglePillText}>
+                  {chartMode === 'spending' ? 'Show Target' : 'Show Spend'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {hasCategories ? (
+            <View style={styles.donutWrapper}>
+              <PieChart
+                data={pieChartData}
+                donut
+                radius={80}
+                innerRadius={55}
+                innerCircleColor={COLORS.card}
+                centerLabelComponent={() => (
+                  <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+                    <Text style={styles.donutCenterSub}>Total</Text>
+                    <Text style={styles.donutCenterVal}>${totalDonutValue.toFixed(0)}</Text>
+                  </View>
+                )}
+              />
+
+              <View style={styles.legendContainer}>
+                {pieChartData.map((item, idx) => (
+                  <View key={idx} style={styles.legendRow}>
+                    <View style={[styles.legendIndicator, { backgroundColor: item.color }]} />
+                    <Text style={styles.legendLabel} numberOfLines={1}>{item.label}</Text>
+                    <Text style={styles.legendValue}>${Number(item.value).toFixed(0)}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          ) : (
+            <View style={styles.emptyCard}>
+              <Ionicons name="pie-chart-outline" size={36} color="#9CA3AF" />
+              <Text style={styles.emptyCardText}>No categories created yet to graph.</Text>
+            </View>
+          )}
+        </View>
+
+        {/* 2. Grouped Bar Chart Card */}
+        <View style={styles.card}>
+          <View style={styles.cardHeaderRow}>
+            <View>
+              <Text style={styles.cardTitle}>Planned vs Spent Envelopes</Text>
+              <Text style={styles.cardSubtitle}>Target allocation compared to actual spend</Text>
+            </View>
+          </View>
+
+          <View style={styles.barLegendRow}>
+            <View style={styles.legendRow}>
+              <View style={[styles.legendIndicator, { backgroundColor: '#93C5FD' }]} />
+              <Text style={styles.legendLabel}>Target</Text>
+            </View>
+            <View style={styles.legendRow}>
+              <View style={[styles.legendIndicator, { backgroundColor: COLORS.primary }]} />
+              <Text style={styles.legendLabel}>Spent</Text>
+            </View>
+          </View>
+
+          {hasCategories ? (
+            <View style={{ alignItems: 'center', marginTop: 10 }}>
+              <BarChart
+                data={groupedBarData}
+                barWidth={18}
+                spacing={24}
+                roundedTop
+                roundedBottom
+                hideRules
+                xAxisThickness={1}
+                yAxisThickness={0}
+                xAxisColor="#E5E7EB"
+                yAxisTextStyle={{ color: '#9CA3AF', fontSize: 10 }}
+                noOfSections={4}
+                width={CHART_WIDTH - 20}
+                height={180}
+              />
+            </View>
+          ) : (
+            <View style={styles.emptyCard}>
+              <Ionicons name="bar-chart-outline" size={36} color="#9CA3AF" />
+              <Text style={styles.emptyCardText}>Add spending envelopes to view bar comparisons.</Text>
+            </View>
+          )}
+        </View>
+
+        {/* 3. Line / Trajectory Chart Card */}
+        <View style={styles.card}>
+          <View style={styles.cardHeaderRow}>
+            <View>
+              <Text style={styles.cardTitle}>Net Cash Trajectory</Text>
+              <Text style={styles.cardSubtitle}>Cumulative net cash over time</Text>
+            </View>
+          </View>
+
+          <View style={{ alignItems: 'center', marginTop: 10 }}>
+            <LineChart
+              data={lineChartData}
+              areaChart
+              curved
+              startFillColor="rgba(37, 99, 235, 0.2)"
+              endFillColor="rgba(37, 99, 235, 0.01)"
+              startOpacity={0.8}
+              endOpacity={0.1}
+              color={COLORS.primary}
+              thickness={3}
+              hideDataPoints={!hasTransactions}
+              dataPointsColor={COLORS.primary}
+              yAxisColor="#E5E7EB"
+              xAxisColor="#E5E7EB"
+              yAxisTextStyle={{ color: '#9CA3AF', fontSize: 10 }}
+              xAxisLabelTextStyle={{ color: '#9CA3AF', fontSize: 10 }}
+              width={CHART_WIDTH - 20}
+              height={160}
+              noOfSections={3}
+            />
+          </View>
+        </View>
+
+        {/* 4. Savings Goals Milestones */}
+        <View style={styles.card}>
+          <View style={styles.cardHeaderRow}>
+            <View>
+              <Text style={styles.cardTitle}>Savings Goal Milestones</Text>
+              <Text style={styles.cardSubtitle}>Progress towards completion targets</Text>
+            </View>
+          </View>
+
+          {savingsPlans.length === 0 ? (
+            <View style={styles.emptyCard}>
+              <Ionicons name="flag-outline" size={36} color="#9CA3AF" />
+              <Text style={styles.emptyCardText}>No savings goals configured yet.</Text>
+            </View>
+          ) : (
+            savingsPlans.map((plan: any) => {
+              const target = Number(plan.target_amount) || 1;
+              const saved = Number(plan.saved_amount) || 0;
+              const progress = Math.min(100, Math.round((saved / target) * 100));
+
+              return (
+                <View key={plan.id} style={styles.progressRow}>
+                  <View style={styles.progressLabelWrap}>
+                    <Text style={styles.progressPlanName}>{plan.name}</Text>
+                    <Text style={styles.progressPlanVals}>
+                      ${saved.toLocaleString()} / ${target.toLocaleString()} ({progress}%)
+                    </Text>
+                  </View>
+                  <View style={styles.track}>
+                    <View style={[styles.trackFill, { width: `${progress}%` }]} />
+                  </View>
+                </View>
+              );
+            })
+          )}
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: COLORS.background, 
-    paddingHorizontal: 16, 
-    paddingTop: 16 
+  container: {
+    flex: 1,
+    backgroundColor: COLORS.background,
   },
-  poolCard: { 
-    backgroundColor: COLORS.card, 
-    borderRadius: 16, 
-    padding: 20, 
-    alignItems: 'center', 
-    shadowColor: '#000', 
-    shadowOpacity: 0.05, 
-    shadowRadius: 5, 
-    elevation: 2, 
-    marginBottom: 16 
+  center: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  poolTitle: { 
-    fontSize: 12, 
-    fontWeight: '600', 
-    color: '#6B7280', 
-    textTransform: 'uppercase', 
-    letterSpacing: 0.5 
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 14,
   },
-  poolAmount: { 
-    fontSize: 32, 
-    fontWeight: '700', 
-    marginVertical: 4 
+  headerTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.text,
   },
-  poolSubtitle: { 
-    fontSize: 12, 
-    color: '#9CA3AF' 
+  headerSub: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginTop: 2,
   },
-  tabActionRow: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    marginBottom: 16, 
-    gap: 10 
+  timeFilterWrap: {
+    flexDirection: 'row',
+    backgroundColor: '#F3F4F6',
+    borderRadius: 10,
+    padding: 2,
   },
-  tabContainer: { 
-    flex: 1, 
-    flexDirection: 'row', 
-    backgroundColor: '#F3F4F6', 
-    borderRadius: 12, 
-    padding: 4 
+  timeBtn: {
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    borderRadius: 8,
   },
-  tab: { 
-    flex: 1, 
-    paddingVertical: 10, 
-    alignItems: 'center', 
-    borderRadius: 10 
+  timeBtnActive: {
+    backgroundColor: COLORS.card,
+    elevation: 1,
   },
-  activeTab: { 
-    backgroundColor: COLORS.card, 
-    shadowColor: '#000', 
-    shadowOpacity: 0.05, 
-    shadowRadius: 2, 
-    elevation: 1 
+  timeBtnText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#6B7280',
   },
-  tabText: { 
-    fontSize: 13, 
-    fontWeight: '600', 
-    color: '#6B7280' 
+  timeBtnTextActive: {
+    color: COLORS.primary,
   },
-  activeTabText: { 
-    color: COLORS.text, 
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 40,
+    gap: 16,
   },
-  addBtn: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    backgroundColor: COLORS.primary, 
-    paddingVertical: 10, 
-    paddingHorizontal: 14, 
-    borderRadius: 12, 
-    gap: 4 
+  welcomeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    borderColor: '#DBEAFE',
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+    gap: 12,
   },
-  addBtnText: { 
-    color: '#FFF', 
-    fontSize: 12, 
-    fontWeight: '600' 
+  bannerIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#DBEAFE',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  contentContainer: { 
-    flex: 1 
+  bannerTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1E40AF',
   },
-  listContent: { 
-    paddingBottom: 40 
+  bannerSubtitle: {
+    fontSize: 11,
+    color: '#3B82F6',
+    lineHeight: 16,
+    marginTop: 2,
   },
-  card: { 
-    backgroundColor: COLORS.card, 
-    borderRadius: 16, 
-    padding: 18, 
-    marginBottom: 12, 
-    shadowColor: '#000', 
-    shadowOpacity: 0.05, 
-    shadowRadius: 5, 
-    elevation: 2 
+  card: {
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+    padding: 18,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
   },
-  cardTop: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'flex-start', 
-    marginBottom: 10 
+  cardHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
   },
-  planName: { 
-    fontSize: 16, 
-    fontWeight: '700', 
-    color: COLORS.text 
+  cardTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.text,
   },
-  deadlineText: { 
-    fontSize: 11, 
-    color: '#6B7280', 
-    marginTop: 2 
+  cardSubtitle: {
+    fontSize: 11,
+    color: '#6B7280',
+    marginTop: 1,
   },
-  savedText: { 
-    fontSize: 18, 
-    fontWeight: '700', 
-    color: COLORS.text 
+  togglePill: {
+    backgroundColor: '#F3F4F6',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 12,
   },
-  percentageText: { 
-    fontSize: 14, 
-    fontWeight: '700', 
-    color: COLORS.primary 
+  togglePillText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.primary,
   },
-  amountRow: { 
-    marginBottom: 8 
+  donutWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    marginTop: 8,
   },
-  barBackground: { 
-    height: 8, 
-    backgroundColor: '#E5E7EB', 
-    borderRadius: 4, 
-    flexDirection: 'row', 
-    overflow: 'hidden', 
-    marginBottom: 8 
+  donutCenterSub: {
+    fontSize: 10,
+    color: '#9CA3AF',
+    fontWeight: '500',
   },
-  redSpentBar: { 
-    height: '100%', 
-    backgroundColor: '#EF4444' 
+  donutCenterVal: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
   },
-  greenRemainingBar: { 
-    height: '100%', 
-    backgroundColor: COLORS.primary 
+  legendContainer: {
+    flex: 1,
+    marginLeft: 18,
+    gap: 6,
   },
-  progressBarBackground: { 
-    height: 8, 
-    backgroundColor: '#E5E7EB', 
-    borderRadius: 4, 
-    overflow: 'hidden' 
+  legendRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
-  progressBarFill: { 
-    height: '100%', 
-    backgroundColor: COLORS.primary, 
-    borderRadius: 4 
+  legendIndicator: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
-  cardFooter: { 
-    flexDirection: 'row', 
-    justifyContent: 'flex-end' 
+  legendLabel: {
+    flex: 1,
+    fontSize: 11,
+    color: '#4B5563',
   },
-  targetSubText: { 
-    fontSize: 12, 
-    fontWeight: '500', 
-    color: '#6B7280' 
+  legendValue: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.text,
   },
-  emptyContainer: { 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    marginTop: 60, 
-    paddingHorizontal: 32 
+  barLegendRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 14,
+    marginBottom: 4,
   },
-  emptyText: { 
-    textAlign: 'center', 
-    color: '#9CA3AF', 
-    fontSize: 13, 
-    marginTop: 10 
+  emptyCard: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 24,
+    gap: 8,
+  },
+  emptyCardText: {
+    fontSize: 12,
+    color: '#9CA3AF',
+  },
+  progressRow: {
+    marginTop: 12,
+  },
+  progressLabelWrap: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  progressPlanName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  progressPlanVals: {
+    fontSize: 11,
+    color: '#6B7280',
+  },
+  track: {
+    height: 8,
+    backgroundColor: '#F3F4F6',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  trackFill: {
+    height: '100%',
+    backgroundColor: COLORS.primary,
+    borderRadius: 4,
   },
 });
