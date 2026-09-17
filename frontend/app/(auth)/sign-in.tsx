@@ -1,117 +1,128 @@
 import { styles } from "@/assets/styles/auth.styles";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
-import { useSignIn } from "@clerk/expo";
-import { type Href, Link, useRouter } from "expo-router";
-import React from "react";
-import { Pressable, TextInput, View } from "react-native";
+import { useClerk, useSignIn } from "@clerk/expo";
+import { Link, useRouter } from "expo-router";
+import React, { useState } from "react";
+import { Alert, Pressable, TextInput, View } from "react-native";
 
 export default function Page() {
   const { signIn, errors, fetchStatus } = useSignIn();
+  const { setActive } = useClerk();
   const router = useRouter();
 
-  const [emailAddress, setEmailAddress] = React.useState("");
-  const [password, setPassword] = React.useState("");
-  const [code, setCode] = React.useState("");
+  const [emailAddress, setEmailAddress] = useState("");
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [pendingMfa, setPendingMfa] = useState(false);
 
   const handleSubmit = async () => {
-    await signIn.password({
-      emailAddress,
-      password,
-    });
-
-    if (signIn.status === "needs_second_factor") {
-      // See https://clerk.com/docs/guides/development/custom-flows/authentication/multi-factor-authentication
-    }
-
-    // For other second factor strategies,
-    // see https://clerk.com/docs/guides/development/custom-flows/authentication/client-trust
-    if (signIn.status === "needs_client_trust") {
-      const emailCodeFactor = signIn.supportedSecondFactors.find(
-        // (factor): factor is EmailCodeFactor => factor.strategy === 'email_code',
-        (factor) => factor.strategy === "email_code",
-      );
-
-      if (emailCodeFactor) {
-        await signIn.mfa.sendEmailCode();
-      }
-    }
-
-    if (signIn.status === "complete") {
-      await signIn.finalize({
-        navigate: ({ session, decorateUrl }) => {
-          if (session?.currentTask) {
-            // Handle pending session tasks
-            // See https://clerk.com/docs/guides/development/custom-flows/authentication/session-tasks
-            console.log(session?.currentTask);
-            return;
-          }
-
-          const url = decorateUrl("/");
-          if (url.startsWith("http")) {
-            window.location.href = url;
-          } else {
-            router.push(url as Href);
-          }
-        },
+    try {
+      await signIn.password({
+        emailAddress: emailAddress.trim(),
+        password,
       });
+
+      if (signIn.status === "complete") {
+        await signIn.finalize({
+          navigate: async ({ session }) => {
+            if (session?.id) {
+              await setActive({ session: session.id });
+            }
+            router.replace("/(home)/home");
+          },
+        });
+      } else if (
+        signIn.status === "needs_second_factor" ||
+        signIn.status === "needs_client_trust"
+      ) {
+        // Send verification code to email if required by client trust
+        try {
+          await signIn.mfa.sendEmailCode();
+        } catch {
+          // Ignores error if code was automatically dispatched
+        }
+        setPendingMfa(true);
+      } else {
+        Alert.alert("Sign In", `Status: ${signIn.status}`);
+      }
+    } catch (err: any) {
+      console.error("Sign-in error:", err);
+      const message =
+        errors?.fields?.identifier?.message ||
+        errors?.fields?.password?.message ||
+        err?.message ||
+        "Invalid credentials or network failure.";
+      Alert.alert("Sign In Failed", message);
     }
   };
 
   const handleVerify = async () => {
-    await signIn.mfa.verifyEmailCode({ code });
+    try {
+      await signIn.mfa.verifyEmailCode({ code });
 
-    if (signIn.status === "complete") {
-      await signIn.finalize({
-        navigate: ({ session, decorateUrl }) => {
-          if (session?.currentTask) {
-            // Handle pending session tasks
-            // See https://clerk.com/docs/guides/development/custom-flows/authentication/session-tasks
-            console.log(session?.currentTask);
-            return;
-          }
-
-          const url = decorateUrl("/");
-          if (url.startsWith("http")) {
-            window.location.href = url;
-          } else {
-            router.push(url as Href);
-          }
-        },
-      });
+      if (signIn.status === "complete") {
+        await signIn.finalize({
+          navigate: async ({ session }) => {
+            if (session?.id) {
+              await setActive({ session: session.id });
+            }
+            router.replace("/(home)/home");
+          },
+        });
+      }
+    } catch (err: any) {
+      console.error("MFA error:", err);
+      Alert.alert(
+        "Verification Failed",
+        errors?.fields?.code?.message || "Invalid code."
+      );
     }
   };
 
-  if (signIn.status === "needs_client_trust") {
+  const handleCancelVerification = () => {
+    setPendingMfa(false);
+    setCode("");
+  };
+
+  if (pendingMfa || signIn.status === "needs_client_trust") {
     return (
       <ThemedView style={styles.container}>
         <ThemedText type="title" style={styles.title}>
           Verify your account
         </ThemedText>
+        <ThemedText style={styles.label}>
+          A new device or session was detected. Enter the one-time code sent to your email.
+        </ThemedText>
+
         <TextInput
           style={styles.input}
           value={code}
-          placeholder="Enter your verification code"
+          placeholder="Enter 6-digit code"
           placeholderTextColor="#666666"
-          onChangeText={(code) => setCode(code)}
+          onChangeText={setCode}
           keyboardType="numeric"
         />
-        {errors.fields.code && (
+        {errors?.fields?.code && (
           <ThemedText style={styles.error}>
             {errors.fields.code.message}
           </ThemedText>
         )}
+
         <Pressable
           style={({ pressed }) => [
             styles.button,
-            fetchStatus === "fetching" && styles.buttonDisabled,
+            (!code || fetchStatus === "fetching") && styles.buttonDisabled,
             pressed && styles.buttonPressed,
           ]}
           onPress={handleVerify}
-          disabled={fetchStatus === "fetching"}
+          disabled={!code || fetchStatus === "fetching"}
         >
-          <ThemedText style={styles.buttonText}>Verify</ThemedText>
+          <ThemedText style={styles.buttonText}>
+            {fetchStatus === "fetching" ? "Verifying..." : "Verify Code"}
+          </ThemedText>
         </Pressable>
+
         <Pressable
           style={({ pressed }) => [
             styles.secondaryButton,
@@ -120,8 +131,18 @@ export default function Page() {
           onPress={() => signIn.mfa.sendEmailCode()}
         >
           <ThemedText style={styles.secondaryButtonText}>
-            I need a new code
+            Resend Email Code
           </ThemedText>
+        </Pressable>
+
+        <Pressable
+          style={({ pressed }) => [
+            { marginTop: 16, alignItems: "center", padding: 8 },
+            pressed && { opacity: 0.6 },
+          ]}
+          onPress={handleCancelVerification}
+        >
+          <ThemedText type="link">Back to Sign In</ThemedText>
         </Pressable>
       </ThemedView>
     );
@@ -132,6 +153,7 @@ export default function Page() {
       <ThemedText type="title" style={styles.title}>
         Sign in
       </ThemedText>
+
       <ThemedText style={styles.label}>Email address</ThemedText>
       <TextInput
         style={styles.input}
@@ -139,14 +161,15 @@ export default function Page() {
         value={emailAddress}
         placeholder="Enter email"
         placeholderTextColor="#D3D3D3"
-        onChangeText={(emailAddress) => setEmailAddress(emailAddress)}
+        onChangeText={setEmailAddress}
         keyboardType="email-address"
       />
-      {errors.fields.identifier && (
+      {errors?.fields?.identifier && (
         <ThemedText style={styles.error}>
           {errors.fields.identifier.message}
         </ThemedText>
       )}
+
       <ThemedText style={styles.label}>Password</ThemedText>
       <TextInput
         style={styles.input}
@@ -154,13 +177,14 @@ export default function Page() {
         placeholder="Enter password"
         placeholderTextColor="#D3D3D3"
         secureTextEntry={true}
-        onChangeText={(password) => setPassword(password)}
+        onChangeText={setPassword}
       />
-      {errors.fields.password && (
+      {errors?.fields?.password && (
         <ThemedText style={styles.error}>
           {errors.fields.password.message}
         </ThemedText>
       )}
+
       <Pressable
         style={({ pressed }) => [
           styles.button,
@@ -171,11 +195,14 @@ export default function Page() {
         onPress={handleSubmit}
         disabled={!emailAddress || !password || fetchStatus === "fetching"}
       >
-        <ThemedText style={styles.buttonText}>Continue</ThemedText>
+        <ThemedText style={styles.buttonText}>
+          {fetchStatus === "fetching" ? "Signing in..." : "Continue"}
+        </ThemedText>
       </Pressable>
+
       <View style={styles.linkContainer}>
         <ThemedText style={styles.linkText}>Don't have an account?</ThemedText>
-        <Link href="/sign-up">
+        <Link href="/(auth)/sign-up">
           <ThemedText type="link">Sign up</ThemedText>
         </Link>
       </View>
