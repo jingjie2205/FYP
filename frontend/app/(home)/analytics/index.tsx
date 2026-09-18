@@ -16,14 +16,20 @@ import { useUser } from '@clerk/expo';
 import { useTransactions } from '@/hooks/useTransactions';
 import { useCategories } from '@/hooks/useCategories';
 import { useSavings } from '@/hooks/useSavings';
-import { COLORS } from '@/constants/colors';
 
 const { width } = Dimensions.get('window');
-const CHART_WIDTH = width - 64;
+const CHART_WIDTH = width - 72; // Adjust for card padding
 
-const PALETTE = [
-  '#3B82F6', '#10B981', '#F59E0B', '#EF4444', 
-  '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16'
+// Cyber-dark optimized neon palette for the pie chart
+const NEON_PALETTE = [
+  '#00D293', // Emerald
+  '#06B6D4', // Cyan
+  '#8B5CF6', // Purple
+  '#F59E0B', // Gold
+  '#EC4899', // Pink
+  '#3B82F6', // Blue
+  '#FF6B6B', // Coral
+  '#14B8A6'  // Teal
 ];
 
 type TimeRange = '1M' | '3M' | '6M' | 'ALL';
@@ -55,7 +61,6 @@ export default function AnalyticsScreen() {
     fetchSavings 
   } = useSavings(userId);
 
-  // Trigger initial data load when user session resolves
   useEffect(() => {
     if (userId) {
       fetchTx();
@@ -88,26 +93,25 @@ export default function AnalyticsScreen() {
       const items = Object.keys(spendingByCat).map((name, i) => ({
         value: spendingByCat[name],
         text: `${spendingByCat[name].toFixed(0)}`,
-        color: PALETTE[i % PALETTE.length],
+        color: NEON_PALETTE[i % NEON_PALETTE.length],
         label: name,
       }));
 
       return items.length > 0 
         ? items 
-        : [{ value: 1, text: '0', color: '#E5E7EB', label: 'No Expenses' }];
+        : [{ value: 1, text: '0', color: '#1E2D3D', label: 'No Expenses' }];
     }
 
-    // Default or Fallback for new accounts: Planned Envelope Allocation
     if (categories.length > 0) {
       return categories.map((cat, i) => ({
         value: Number(cat.target_amount) > 0 ? Number(cat.target_amount) : 1,
         text: `${cat.name}`,
-        color: PALETTE[i % PALETTE.length],
+        color: NEON_PALETTE[i % NEON_PALETTE.length],
         label: cat.name,
       }));
     }
 
-    return [{ value: 1, text: '0', color: '#E5E7EB', label: 'No Data' }];
+    return [{ value: 1, text: '0', color: '#1E2D3D', label: 'No Data' }];
   }, [hasTransactions, chartMode, transactions, categories]);
 
   const totalDonutValue = pieChartData.reduce((sum, item) => sum + (item.label !== 'No Data' ? item.value : 0), 0);
@@ -124,12 +128,12 @@ export default function AnalyticsScreen() {
         label: cat.name.length > 6 ? `${cat.name.slice(0, 5)}…` : cat.name,
         spacing: 4,
         labelWidth: 50,
-        labelTextStyle: { color: '#6B7280', fontSize: 10 },
-        frontColor: '#93C5FD',
+        labelTextStyle: { color: '#64748B', fontSize: 10 },
+        frontColor: '#1E2D3D', // Muted dark for target
       });
       data.push({
         value: spent,
-        frontColor: COLORS.primary,
+        frontColor: '#00D293', // Emerald for actual spent
       });
     });
     return data;
@@ -161,11 +165,10 @@ export default function AnalyticsScreen() {
     });
   }, [transactions, hasTransactions]);
 
-  // Only lock with full-screen spinner if Clerk user hasn't loaded yet
   if (!isUserLoaded) {
     return (
       <View style={[styles.container, styles.center]}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+        <ActivityIndicator size="large" color="#00D293" />
       </View>
     );
   }
@@ -175,7 +178,7 @@ export default function AnalyticsScreen() {
   if (isInitialLoading) {
     return (
       <View style={[styles.container, styles.center]}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
+        <ActivityIndicator size="large" color="#00D293" />
       </View>
     );
   }
@@ -209,13 +212,13 @@ export default function AnalyticsScreen() {
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00D293" />}
       >
         {/* Onboarding Banner for zero transactions */}
         {!hasTransactions && (
           <View style={styles.welcomeBanner}>
             <View style={styles.bannerIconWrap}>
-              <Ionicons name="sparkles" size={20} color={COLORS.primary} />
+              <Ionicons name="sparkles" size={20} color="#00D293" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.bannerTitle}>Budget Projections Active</Text>
@@ -255,9 +258,11 @@ export default function AnalyticsScreen() {
               <PieChart
                 data={pieChartData}
                 donut
+                isAnimated
+                animationDuration={800}
                 radius={80}
                 innerRadius={55}
-                innerCircleColor={COLORS.card}
+                innerCircleColor="#0C1521" // Matches card background perfectly
                 centerLabelComponent={() => (
                   <View style={{ alignItems: 'center', justifyContent: 'center' }}>
                     <Text style={styles.donutCenterSub}>Total</Text>
@@ -277,9 +282,9 @@ export default function AnalyticsScreen() {
               </View>
             </View>
           ) : (
-            <View style={styles.emptyCard}>
-              <Ionicons name="pie-chart-outline" size={36} color="#9CA3AF" />
-              <Text style={styles.emptyCardText}>No categories created yet to graph.</Text>
+            <View style={styles.emptyStateBox}>
+              <Ionicons name="pie-chart-outline" size={32} color="#00D293" />
+              <Text style={styles.emptyText}>No categories created yet to graph.</Text>
             </View>
           )}
         </View>
@@ -295,11 +300,11 @@ export default function AnalyticsScreen() {
 
           <View style={styles.barLegendRow}>
             <View style={styles.legendRow}>
-              <View style={[styles.legendIndicator, { backgroundColor: '#93C5FD' }]} />
+              <View style={[styles.legendIndicator, { backgroundColor: '#1E2D3D' }]} />
               <Text style={styles.legendLabel}>Target</Text>
             </View>
             <View style={styles.legendRow}>
-              <View style={[styles.legendIndicator, { backgroundColor: COLORS.primary }]} />
+              <View style={[styles.legendIndicator, { backgroundColor: '#00D293' }]} />
               <Text style={styles.legendLabel}>Spent</Text>
             </View>
           </View>
@@ -308,6 +313,7 @@ export default function AnalyticsScreen() {
             <View style={{ alignItems: 'center', marginTop: 10 }}>
               <BarChart
                 data={groupedBarData}
+                isAnimated
                 barWidth={18}
                 spacing={24}
                 roundedTop
@@ -315,17 +321,17 @@ export default function AnalyticsScreen() {
                 hideRules
                 xAxisThickness={1}
                 yAxisThickness={0}
-                xAxisColor="#E5E7EB"
-                yAxisTextStyle={{ color: '#9CA3AF', fontSize: 10 }}
+                xAxisColor="#1E2D3D"
+                yAxisTextStyle={{ color: '#64748B', fontSize: 10 }}
                 noOfSections={4}
                 width={CHART_WIDTH - 20}
                 height={180}
               />
             </View>
           ) : (
-            <View style={styles.emptyCard}>
-              <Ionicons name="bar-chart-outline" size={36} color="#9CA3AF" />
-              <Text style={styles.emptyCardText}>Add spending envelopes to view bar comparisons.</Text>
+            <View style={styles.emptyStateBox}>
+              <Ionicons name="bar-chart-outline" size={32} color="#00D293" />
+              <Text style={styles.emptyText}>Add spending envelopes to view bar comparisons.</Text>
             </View>
           )}
         </View>
@@ -342,20 +348,23 @@ export default function AnalyticsScreen() {
           <View style={{ alignItems: 'center', marginTop: 10 }}>
             <LineChart
               data={lineChartData}
+              isAnimated
+              animateOnDataChange
+              animationDuration={1000}
               areaChart
               curved
-              startFillColor="rgba(37, 99, 235, 0.2)"
-              endFillColor="rgba(37, 99, 235, 0.01)"
+              startFillColor="rgba(0, 210, 147, 0.3)"
+              endFillColor="rgba(0, 210, 147, 0.01)"
               startOpacity={0.8}
               endOpacity={0.1}
-              color={COLORS.primary}
+              color="#00D293"
               thickness={3}
               hideDataPoints={!hasTransactions}
-              dataPointsColor={COLORS.primary}
-              yAxisColor="#E5E7EB"
-              xAxisColor="#E5E7EB"
-              yAxisTextStyle={{ color: '#9CA3AF', fontSize: 10 }}
-              xAxisLabelTextStyle={{ color: '#9CA3AF', fontSize: 10 }}
+              dataPointsColor="#00D293"
+              yAxisColor="#1E2D3D"
+              xAxisColor="#1E2D3D"
+              yAxisTextStyle={{ color: '#64748B', fontSize: 10 }}
+              xAxisLabelTextStyle={{ color: '#64748B', fontSize: 10 }}
               width={CHART_WIDTH - 20}
               height={160}
               noOfSections={3}
@@ -373,9 +382,9 @@ export default function AnalyticsScreen() {
           </View>
 
           {savingsPlans.length === 0 ? (
-            <View style={styles.emptyCard}>
-              <Ionicons name="flag-outline" size={36} color="#9CA3AF" />
-              <Text style={styles.emptyCardText}>No savings goals configured yet.</Text>
+            <View style={styles.emptyStateBox}>
+              <Ionicons name="flag-outline" size={32} color="#00D293" />
+              <Text style={styles.emptyText}>No savings goals configured yet.</Text>
             </View>
           ) : (
             savingsPlans.map((plan: any) => {
@@ -388,7 +397,7 @@ export default function AnalyticsScreen() {
                   <View style={styles.progressLabelWrap}>
                     <Text style={styles.progressPlanName}>{plan.name}</Text>
                     <Text style={styles.progressPlanVals}>
-                      ${saved.toLocaleString()} / ${target.toLocaleString()} ({progress}%)
+                      ${saved.toLocaleString()} /${target.toLocaleString()} ({progress}%)
                     </Text>
                   </View>
                   <View style={styles.track}>
@@ -407,7 +416,7 @@ export default function AnalyticsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: '#070D14',
   },
   center: {
     justifyContent: 'center',
@@ -417,138 +426,145 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     paddingTop: 8,
     paddingBottom: 14,
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: COLORS.text,
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
   headerSub: {
     fontSize: 12,
-    color: '#6B7280',
+    color: '#64748B',
     marginTop: 2,
   },
   timeFilterWrap: {
     flexDirection: 'row',
-    backgroundColor: '#F3F4F6',
-    borderRadius: 10,
-    padding: 2,
+    backgroundColor: '#121E2C',
+    borderRadius: 12,
+    padding: 4,
+    borderWidth: 1,
+    borderColor: '#192839',
   },
   timeBtn: {
-    paddingVertical: 5,
-    paddingHorizontal: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
     borderRadius: 8,
   },
   timeBtnActive: {
-    backgroundColor: COLORS.card,
-    elevation: 1,
+    backgroundColor: '#0C1521',
+    borderWidth: 1,
+    borderColor: '#1E2D3D',
   },
   timeBtnText: {
     fontSize: 11,
     fontWeight: '600',
-    color: '#6B7280',
+    color: '#64748B',
   },
   timeBtnTextActive: {
-    color: COLORS.primary,
+    color: '#FFFFFF',
+    fontWeight: '700',
   },
   scrollContent: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     paddingBottom: 40,
     gap: 16,
   },
   welcomeBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#EFF6FF',
-    borderColor: '#DBEAFE',
+    backgroundColor: '#0C2028',
+    borderColor: '#174747',
     borderWidth: 1,
-    borderRadius: 14,
-    padding: 14,
+    borderRadius: 16,
+    padding: 16,
     gap: 12,
   },
   bannerIconWrap: {
     width: 36,
     height: 36,
-    borderRadius: 18,
-    backgroundColor: '#DBEAFE',
+    borderRadius: 12,
+    backgroundColor: '#0A171D',
+    borderWidth: 1,
+    borderColor: '#123D3E',
     alignItems: 'center',
     justifyContent: 'center',
   },
   bannerTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1E40AF',
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#9EE5CF',
   },
   bannerSubtitle: {
     fontSize: 11,
-    color: '#3B82F6',
+    color: '#00D293',
     lineHeight: 16,
     marginTop: 2,
+    opacity: 0.9,
   },
   card: {
-    backgroundColor: COLORS.card,
-    borderRadius: 16,
-    padding: 18,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 5,
+    backgroundColor: '#0C1521',
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#192839',
   },
   cardHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
+    alignItems: 'flex-start',
+    marginBottom: 12,
   },
   cardTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: COLORS.text,
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
   cardSubtitle: {
-    fontSize: 11,
-    color: '#6B7280',
-    marginTop: 1,
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
   },
   togglePill: {
-    backgroundColor: '#F3F4F6',
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 12,
+    backgroundColor: '#121E2C',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1E2D3D',
   },
   togglePillText: {
     fontSize: 11,
-    fontWeight: '600',
-    color: COLORS.primary,
+    fontWeight: '700',
+    color: '#00D293',
   },
   donutWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    marginTop: 8,
+    marginTop: 12,
   },
   donutCenterSub: {
-    fontSize: 10,
-    color: '#9CA3AF',
-    fontWeight: '500',
+    fontSize: 11,
+    color: '#64748B',
+    fontWeight: '600',
   },
   donutCenterVal: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
   legendContainer: {
     flex: 1,
     marginLeft: 18,
-    gap: 6,
+    gap: 8,
   },
   legendRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
   legendIndicator: {
     width: 8,
@@ -557,56 +573,66 @@ const styles = StyleSheet.create({
   },
   legendLabel: {
     flex: 1,
-    fontSize: 11,
-    color: '#4B5563',
+    fontSize: 12,
+    color: '#8295AB',
   },
   legendValue: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: COLORS.text,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   barLegendRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
-    gap: 14,
-    marginBottom: 4,
+    gap: 16,
+    marginBottom: 8,
   },
-  emptyCard: {
+  emptyStateBox: {
+    backgroundColor: '#0C1521',
+    borderColor: '#162232',
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderRadius: 14,
+    paddingVertical: 24,
+    paddingHorizontal: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 24,
-    gap: 8,
+    gap: 10,
+    marginTop: 8,
   },
-  emptyCardText: {
+  emptyText: {
     fontSize: 12,
-    color: '#9CA3AF',
+    color: '#64748B',
+    fontWeight: '500',
   },
   progressRow: {
-    marginTop: 12,
+    marginTop: 16,
   },
   progressLabelWrap: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 6,
+    alignItems: 'flex-end',
+    marginBottom: 8,
   },
   progressPlanName: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   progressPlanVals: {
-    fontSize: 11,
-    color: '#6B7280',
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748B',
   },
   track: {
     height: 8,
-    backgroundColor: '#F3F4F6',
+    backgroundColor: '#121E2C',
     borderRadius: 4,
     overflow: 'hidden',
   },
   trackFill: {
     height: '100%',
-    backgroundColor: COLORS.primary,
+    backgroundColor: '#00D293',
     borderRadius: 4,
   },
 });

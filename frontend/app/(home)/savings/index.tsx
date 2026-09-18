@@ -16,9 +16,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useUser } from '@clerk/expo';
 import { Ionicons } from '@expo/vector-icons';
-import { useCategories, Category } from '../../../hooks/useCategories';
+import { useCategories, Category, GroupedCategory } from '../../../hooks/useCategories';
 import { useSavings, SavingsPlan } from '@/hooks/useSavings';
-import { COLORS } from '@/constants/colors';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
@@ -30,9 +29,18 @@ export default function PlanScreen() {
   const [totalAccountsBalance, setTotalAccountsBalance] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Accordion State
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
+  // Group Modal States
+  const [groupModalVisible, setGroupModalVisible] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<GroupedCategory | null>(null);
+  const [groupNameInput, setGroupNameInput] = useState('');
+
   // Category Modal States
   const [categoryModalVisible, setCategoryModalVisible] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   const [categoryNameInput, setCategoryNameInput] = useState('');
   const [categoryTargetInput, setCategoryTargetInput] = useState('');
 
@@ -47,11 +55,15 @@ export default function PlanScreen() {
   // Custom Hooks
   const { 
     categories, 
+    groupedCategories,
     isLoading: categoriesLoading, 
     fetchCategories, 
     createCategory, 
     updateCategory, 
-    deleteCategory 
+    deleteCategory,
+    createGroup,
+    updateGroup,
+    deleteGroup
   } = useCategories(userId);
 
   const {
@@ -62,7 +74,6 @@ export default function PlanScreen() {
     updateSavingsPlan
   } = useSavings(userId);
 
-  // Fetch all accounts balance to calculate the cash pool
   const fetchAccountsBalance = useCallback(async () => {
     if (!userId) return;
     try {
@@ -97,18 +108,23 @@ export default function PlanScreen() {
     setRefreshing(false);
   };
 
-  // Ready to Assign calculation
   const totalAllocatedCategories = categories.reduce((sum, cat) => sum + Number(cat.target_amount || 0), 0);
   const totalAllocatedSavings = savingsPlans.reduce((sum, plan) => sum + Number(plan.saved_amount || 0), 0);
   const availablePool = totalAccountsBalance - (totalAllocatedCategories + totalAllocatedSavings);
 
-  // Unified Top Add Button Handler
+  const toggleGroupCollapse = (groupId: string) => {
+    setCollapsedGroups(prev => ({
+      ...prev,
+      [groupId]: !prev[groupId]
+    }));
+  };
+
+  // Main Top-Right "New" Button Handler (Creates Groups or Savings)
   const handleOpenCreateModal = () => {
     if (activeTab === 'spending') {
-      setEditingCategory(null);
-      setCategoryNameInput('');
-      setCategoryTargetInput('');
-      setCategoryModalVisible(true);
+      setEditingGroup(null);
+      setGroupNameInput('');
+      setGroupModalVisible(true);
     } else {
       setEditingSavings(null);
       setSavingsNameInput('');
@@ -119,8 +135,62 @@ export default function PlanScreen() {
     }
   };
 
-  // Category CRUD Handlers
+  // ===================== GROUP HANDLERS =====================
+  const handleOpenEditGroup = (group: GroupedCategory) => {
+    setEditingGroup(group);
+    setGroupNameInput(group.name);
+    setGroupModalVisible(true);
+  };
+
+  const handleSaveGroup = async () => {
+    if (!groupNameInput.trim()) {
+      Alert.alert('Error', 'Please enter a group name.');
+      return;
+    }
+
+    let success = false;
+    if (editingGroup) {
+      success = await updateGroup(editingGroup.id, groupNameInput.trim());
+    } else {
+      success = await createGroup(groupNameInput.trim());
+    }
+
+    if (success) {
+      setGroupModalVisible(false);
+      fetchCategories();
+    }
+  };
+
+  const handleDeleteGroupPrompt = (groupId: string) => {
+    Alert.alert(
+      'Delete Group',
+      'Are you sure? This will delete the header and all categories inside it.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Delete', 
+          style: 'destructive', 
+          onPress: async () => {
+            await deleteGroup(groupId);
+            setGroupModalVisible(false);
+            fetchCategories();
+          } 
+        }
+      ]
+    );
+  };
+
+  // ===================== CATEGORY HANDLERS =====================
+  const handleOpenCreateCategory = (groupId: string) => {
+    setActiveGroupId(groupId);
+    setEditingCategory(null);
+    setCategoryNameInput('');
+    setCategoryTargetInput('');
+    setCategoryModalVisible(true);
+  };
+
   const handleOpenEditCategory = (category: Category) => {
+    setActiveGroupId(category.group_id);
     setEditingCategory(category);
     setCategoryNameInput(category.name);
     setCategoryTargetInput(String(category.target_amount || 0));
@@ -152,21 +222,23 @@ export default function PlanScreen() {
         fetchCategories();
       }
     } else {
-      await createCategory({
+      if (!activeGroupId) return;
+      const success = await createCategory({
         name: categoryNameInput.trim(),
         target_amount: newTargetAmount,
-        current_amount: newTargetAmount,
-        user_id: userId || '',
-      } as any);
+        group_id: activeGroupId,
+      });
       
-      setCategoryModalVisible(false);
-      fetchCategories();
+      if (success) {
+        setCategoryModalVisible(false);
+        fetchCategories();
+      }
     }
   };
 
   const handleDeleteCategoryPrompt = (categoryId: string) => {
     Alert.alert(
-      'Delete Category',
+      'Delete Envelope',
       'Are you sure you want to delete this spending envelope?',
       [
         { text: 'Cancel', style: 'cancel' },
@@ -183,7 +255,7 @@ export default function PlanScreen() {
     );
   };
 
-  // Savings CRUD Handlers
+  // ===================== SAVINGS HANDLERS =====================
   const handleOpenEditSavings = (plan: SavingsPlan) => {
     setEditingSavings(plan);
     setSavingsNameInput(plan.name);
@@ -195,7 +267,7 @@ export default function PlanScreen() {
 
   const handleSaveSavings = async () => {
     if (!savingsNameInput.trim() || !savingsTargetInput) {
-      Alert.alert('Validation Error', 'Please provide a name and target amount.');
+      Alert.alert('Validation Error', 'Please provide a plan name and target amount.');
       return;
     }
 
@@ -221,7 +293,7 @@ export default function PlanScreen() {
 
   const handleDeleteSavingsPrompt = (planId: string) => {
     Alert.alert(
-      'Delete Savings Plan',
+      'Delete Plan',
       'Are you sure you want to delete this savings plan?',
       [
         { text: 'Cancel', style: 'cancel' },
@@ -239,7 +311,7 @@ export default function PlanScreen() {
               }
             } catch (err) {
               console.error('Error deleting savings plan:', err);
-              Alert.alert('Error', 'Network error.');
+              Alert.alert('Error', 'Network connection error.');
             }
           }
         }
@@ -247,42 +319,94 @@ export default function PlanScreen() {
     );
   };
 
-  const renderCategoryItem = ({ item }: { item: Category }) => {
+  // ===================== RENDERING =====================
+  const renderCategoryItem = (item: Category) => {
     const target = Number(item.target_amount) || 0;
     const current = Number(item.current_amount) || 0;
     const spent = Math.max(0, target - current);
     
     const targetSafe = target > 0 ? target : 1;
     const remainingPercentage = Math.min(100, Math.max(0, (current / targetSafe) * 100));
-    const spentPercentage = Math.min(100, Math.max(0, (spent / targetSafe) * 100));
 
     return (
-      <View style={styles.card}>
-        <View style={styles.cardTop}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.planName}>{item.name}</Text>
-            <Text style={styles.deadlineText}>
-              Spent: <Text style={{ color: '#EF4444', fontWeight: '600' }}>${spent.toFixed(2)}</Text>
-            </Text>
+      <View key={item.id} style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View style={styles.cardHeaderLeft}>
+            <View style={styles.envelopeIconBadge}>
+              <Ionicons name="wallet-outline" size={16} color="#00D293" />
+            </View>
+            <View>
+              <Text style={styles.planName} numberOfLines={1}>{item.name}</Text>
+              <Text style={styles.envelopeSub}>
+                Spent: <Text style={styles.spentHighlight}>${spent.toFixed(2)}</Text>
+              </Text>
+            </View>
           </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <Text style={styles.savedText}>${target.toFixed(2)}</Text>
-            <TouchableOpacity onPress={() => handleOpenEditCategory(item)} style={styles.editIconBtn}>
-              <Ionicons name="ellipsis-horizontal" size={18} color="#9CA3AF" />
+
+          <View style={styles.cardHeaderRight}>
+            <Text style={styles.targetValue}>${target.toFixed(2)}</Text>
+            <TouchableOpacity onPress={() => handleOpenEditCategory(item)} style={styles.editBtn}>
+              <Ionicons name="ellipsis-horizontal" size={16} color="#64748B" />
             </TouchableOpacity>
           </View>
         </View>
 
         <View style={styles.barBackground}>
           <View style={[styles.greenRemainingBar, { width: `${remainingPercentage}%` }]} />
-          <View style={[styles.redSpentBar, { width: `${spentPercentage}%` }]} />
         </View>
 
         <View style={styles.cardFooter}>
-          <Text style={styles.targetSubText}>
-            Available: <Text style={{ color: current < 0 ? '#EF4444' : COLORS.primary, fontWeight: '700' }}>${current.toFixed(2)}</Text>
+          <Text style={styles.footerLabel}>Available</Text>
+          <Text style={[styles.availableAmount, current < 0 && styles.negativeText]}>
+            ${current.toFixed(2)}
           </Text>
         </View>
+      </View>
+    );
+  };
+
+  const renderGroupItem = ({ item: group }: { item: GroupedCategory }) => {
+    const isCollapsed = collapsedGroups[group.id];
+    const groupTargetTotal = group.categories.reduce((sum, cat) => sum + Number(cat.target_amount || 0), 0);
+    const groupAvailableTotal = group.categories.reduce((sum, cat) => sum + Number(cat.current_amount || 0), 0);
+
+    return (
+      <View style={styles.groupContainer}>
+        {/* Accordion Header */}
+        <TouchableOpacity style={styles.groupHeader} onPress={() => toggleGroupCollapse(group.id)} activeOpacity={0.8}>
+          <View style={styles.groupHeaderLeft}>
+            <Ionicons name={isCollapsed ? "chevron-forward" : "chevron-down"} size={18} color="#64748B" />
+            <Text style={styles.groupTitle}>{group.name}</Text>
+          </View>
+          <View style={styles.groupHeaderRight}>
+            <Text style={styles.groupTotals}>
+              <Text style={{ color: '#00D293' }}>${groupAvailableTotal.toFixed(0)}</Text> /${groupTargetTotal.toFixed(0)}
+            </Text>
+            <TouchableOpacity 
+              style={styles.groupActionBtn}
+              onPress={() => handleOpenCreateCategory(group.id)}
+            >
+              <Ionicons name="add" size={16} color="#00D293" />
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.groupActionBtn}
+              onPress={() => handleOpenEditGroup(group)}
+            >
+              <Ionicons name="create-outline" size={16} color="#64748B" />
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+
+        {/* Accordion Content */}
+        {!isCollapsed && (
+          <View style={styles.groupContent}>
+            {group.categories.length === 0 ? (
+              <Text style={styles.emptyGroupText}>No envelopes in this group.</Text>
+            ) : (
+              group.categories.map(renderCategoryItem)
+            )}
+          </View>
+        )}
       </View>
     );
   };
@@ -294,23 +418,30 @@ export default function PlanScreen() {
 
     return (
       <View style={styles.card}>
-        <View style={styles.cardTop}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.planName}>{item.name}</Text>
-            <Text style={styles.deadlineText}>Target by: {item.deadline || 'Ongoing'}</Text>
+        <View style={styles.cardHeader}>
+          <View style={styles.cardHeaderLeft}>
+            <View style={styles.goalIconBadge}>
+              <Ionicons name="shield-checkmark-outline" size={16} color="#00D293" />
+            </View>
+            <View>
+              <Text style={styles.planName} numberOfLines={1}>{item.name}</Text>
+              <Text style={styles.envelopeSub}>Target: {item.deadline || 'Ongoing'}</Text>
+            </View>
           </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <Text style={styles.percentageText}>{percentage.toFixed(0)}%</Text>
-            <TouchableOpacity onPress={() => handleOpenEditSavings(item)} style={styles.editIconBtn}>
-              <Ionicons name="ellipsis-horizontal" size={18} color="#9CA3AF" />
+
+          <View style={styles.cardHeaderRight}>
+            <View style={styles.percentBadge}>
+              <Text style={styles.percentBadgeText}>{percentage.toFixed(0)}%</Text>
+            </View>
+            <TouchableOpacity onPress={() => handleOpenEditSavings(item)} style={styles.editBtn}>
+              <Ionicons name="ellipsis-horizontal" size={16} color="#64748B" />
             </TouchableOpacity>
           </View>
         </View>
 
-        <View style={styles.amountRow}>
-          <Text style={styles.savedText}>
-            ${saved.toLocaleString()} <Text style={styles.targetSubText}>/ ${target.toLocaleString()}</Text>
-          </Text>
+        <View style={styles.savingsValuesRow}>
+          <Text style={styles.savedHighlight}>${saved.toLocaleString()}</Text>
+          <Text style={styles.goalTargetText}>of ${target.toLocaleString()}</Text>
         </View>
 
         <View style={styles.progressBarBackground}>
@@ -322,21 +453,36 @@ export default function PlanScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      {/* Ready to Assign Header */}
       <View style={styles.poolCard}>
-        <Text style={styles.poolTitle}>Ready to Assign</Text>
+        <View style={styles.poolHeader}>
+          <Text style={styles.poolEyebrow}>UNALLOCATED CASH POOL</Text>
+          <View style={[
+            styles.statusTag, 
+            availablePool < 0 ? styles.statusTagNegative : styles.statusTagPositive
+          ]}>
+            <Text style={[
+              styles.statusTagText, 
+              availablePool < 0 ? styles.statusTextNegative : styles.statusTextPositive
+            ]}>
+              {availablePool < 0 ? 'Overallocated' : 'Available'}
+            </Text>
+          </View>
+        </View>
+
         <Text style={[
           styles.poolAmount, 
-          { color: availablePool < 0 ? '#EF4444' : COLORS.primary }
+          availablePool < 0 ? styles.poolAmountNegative : styles.poolAmountPositive
         ]}>
           ${availablePool.toFixed(2)}
         </Text>
-        <Text style={styles.poolSubtitle}>
-          From total cash: ${totalAccountsBalance.toFixed(2)}
-        </Text>
+
+        <View style={styles.poolFooter}>
+          <Text style={styles.poolSubtitle}>
+            Total Net Balance: <Text style={styles.poolWhite}>${totalAccountsBalance.toFixed(2)}</Text>
+          </Text>
+        </View>
       </View>
 
-      {/* Tab Switcher & Dynamic Add Button */}
       <View style={styles.tabActionRow}>
         <View style={styles.tabContainer}>
           <TouchableOpacity 
@@ -344,7 +490,7 @@ export default function PlanScreen() {
             onPress={() => setActiveTab('spending')}
           >
             <Text style={[styles.tabText, activeTab === 'spending' && styles.activeTabText]}>
-              Spending
+              Envelopes
             </Text>
           </TouchableOpacity>
 
@@ -353,44 +499,49 @@ export default function PlanScreen() {
             onPress={() => setActiveTab('savings')}
           >
             <Text style={[styles.tabText, activeTab === 'savings' && styles.activeTabText]}>
-              Savings
+              Savings Goals
             </Text>
           </TouchableOpacity>
         </View>
 
         <TouchableOpacity style={styles.addBtn} onPress={handleOpenCreateModal}>
-          <Ionicons name="add" size={16} color="#FFF" />
-          <Text style={styles.addBtnText}>Add</Text>
+          <Ionicons name="add" size={16} color="#03151E" />
+          <Text style={styles.addBtnText}>{activeTab === 'spending' ? 'New Group' : 'New Goal'}</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Tab Content */}
       <View style={styles.contentContainer}>
         {activeTab === 'spending' ? (
           categoriesLoading && !refreshing ? (
-            <ActivityIndicator size="large" color={COLORS.primary} style={{ marginTop: 40 }} />
-          ) : categories.length === 0 ? (
+            <ActivityIndicator size="large" color="#00D293" style={{ marginTop: 40 }} />
+          ) : groupedCategories.length === 0 ? (
             <View style={styles.emptyContainer}>
-              <Ionicons name="wallet-outline" size={48} color="#9CA3AF" />
-              <Text style={styles.emptyText}>No spending categories found. Create one to start budgeting!</Text>
+              <View style={styles.emptyIconCircle}>
+                <Ionicons name="folder-open-outline" size={32} color="#00D293" />
+              </View>
+              <Text style={styles.emptyTitle}>No Category Groups</Text>
+              <Text style={styles.emptyText}>Create a group (e.g. "Bills") to start organizing your envelopes.</Text>
             </View>
           ) : (
             <FlatList 
-              data={categories}
+              data={groupedCategories}
               keyExtractor={(item) => item.id}
-              renderItem={renderCategoryItem}
+              renderItem={renderGroupItem}
               contentContainerStyle={styles.listContent}
               showsVerticalScrollIndicator={false}
-              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00D293" colors={['#00D293']}/>}
             />
           )
         ) : (
           savingsLoading && !refreshing ? (
-            <ActivityIndicator size="large" color={COLORS.primary} style={{ marginTop: 40 }} />
+            <ActivityIndicator size="large" color="#00D293" style={{ marginTop: 40 }} />
           ) : savingsPlans.length === 0 ? (
             <View style={styles.emptyContainer}>
-              <Ionicons name="shield-checkmark-outline" size={48} color="#9CA3AF" />
-              <Text style={styles.emptyText}>No savings goals found. Create one to track your savings!</Text>
+              <View style={styles.emptyIconCircle}>
+                <Ionicons name="shield-checkmark-outline" size={32} color="#00D293" />
+              </View>
+              <Text style={styles.emptyTitle}>No Savings Goals Yet</Text>
+              <Text style={styles.emptyText}>Lock capital away for long term milestones and emergency funds.</Text>
             </View>
           ) : (
             <FlatList 
@@ -399,33 +550,85 @@ export default function PlanScreen() {
               renderItem={renderSavingsItem}
               contentContainerStyle={styles.listContent}
               showsVerticalScrollIndicator={false}
-              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00D293" colors={['#00D293']}/>}
             />
           )
         )}
       </View>
 
-      {/* CATEGORY MODAL */}
+      {/* GROUP MODAL */}
+      <Modal visible={groupModalVisible} animationType="slide" transparent={true}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeaderRow}>
+              <View>
+                <Text style={styles.modalHeader}>{editingGroup ? 'Edit Group' : 'New Category Group'}</Text>
+                <Text style={styles.modalSubHeader}>Create a header to organize your envelopes</Text>
+              </View>
+              <TouchableOpacity onPress={() => setGroupModalVisible(false)} style={styles.modalCloseBtn}>
+                <Ionicons name="close" size={20} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
+            
+            <Text style={styles.label}>GROUP NAME</Text>
+            <TextInput 
+              style={styles.input} 
+              placeholder="e.g. Bills, Everyday, Subscriptions" 
+              placeholderTextColor="#475569"
+              value={groupNameInput}
+              onChangeText={setGroupNameInput}
+            />
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setGroupModalVisible(false)}>
+                <Text style={styles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.saveBtn} onPress={handleSaveGroup}>
+                <Text style={styles.saveText}>Save Group</Text>
+              </TouchableOpacity>
+            </View>
+
+            {editingGroup && (
+              <TouchableOpacity style={styles.deleteBtnModal} onPress={() => handleDeleteGroupPrompt(editingGroup.id)}>
+                <Ionicons name="trash-outline" size={16} color="#FF6B6B" />
+                <Text style={styles.deleteBtnText}>Delete Group & Contents</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* CATEGORY / ENVELOPE MODAL */}
       <Modal visible={categoryModalVisible} animationType="slide" transparent={true}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalHeader}>{editingCategory ? 'Edit Spending Envelope' : 'New Spending Envelope'}</Text>
+            <View style={styles.modalHeaderRow}>
+              <View>
+                <Text style={styles.modalHeader}>
+                  {editingCategory ? 'Edit Envelope' : 'New Envelope'}
+                </Text>
+                <Text style={styles.modalSubHeader}>Set allocated limits for this envelope</Text>
+              </View>
+              <TouchableOpacity onPress={() => setCategoryModalVisible(false)} style={styles.modalCloseBtn}>
+                <Ionicons name="close" size={20} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
             
-            <Text style={styles.label}>Category Name</Text>
+            <Text style={styles.label}>ENVELOPE NAME</Text>
             <TextInput 
               style={styles.input} 
-              placeholder="e.g. Food, Transport, Utilities" 
-              placeholderTextColor="#9CA3AF"
+              placeholder="e.g. Groceries, Dining Out" 
+              placeholderTextColor="#475569"
               value={categoryNameInput}
               onChangeText={setCategoryNameInput}
             />
             
-            <Text style={styles.label}>Target Amount ($)</Text>
+            <Text style={styles.label}>ALLOCATED BUDGET ($)</Text>
             <TextInput 
               style={styles.input} 
               placeholder="0.00" 
-              placeholderTextColor="#9CA3AF"
-              keyboardType="numeric"
+              placeholderTextColor="#475569"
+              keyboardType="decimal-pad"
               value={categoryTargetInput}
               onChangeText={setCategoryTargetInput}
             />
@@ -435,16 +638,14 @@ export default function PlanScreen() {
                 <Text style={styles.cancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.saveBtn} onPress={handleSaveCategory}>
-                <Text style={styles.saveText}>Save</Text>
+                <Text style={styles.saveText}>Save Envelope</Text>
               </TouchableOpacity>
             </View>
 
             {editingCategory && (
-              <TouchableOpacity 
-                style={styles.deleteBtnModal} 
-                onPress={() => handleDeleteCategoryPrompt(editingCategory.id)}
-              >
-                <Text style={styles.deleteBtnText}>Delete Category</Text>
+              <TouchableOpacity style={styles.deleteBtnModal} onPress={() => handleDeleteCategoryPrompt(editingCategory.id)}>
+                <Ionicons name="trash-outline" size={16} color="#FF6B6B" />
+                <Text style={styles.deleteBtnText}>Delete Envelope</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -455,42 +656,57 @@ export default function PlanScreen() {
       <Modal visible={savingsModalVisible} animationType="slide" transparent={true}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalHeader}>{editingSavings ? 'Edit Savings Plan' : 'New Savings Plan'}</Text>
+            <View style={styles.modalHeaderRow}>
+              <View>
+                <Text style={styles.modalHeader}>
+                  {editingSavings ? 'Edit Savings Goal' : 'New Savings Goal'}
+                </Text>
+                <Text style={styles.modalSubHeader}>Plan your target and tracking parameters</Text>
+              </View>
+              <TouchableOpacity onPress={() => setSavingsModalVisible(false)} style={styles.modalCloseBtn}>
+                <Ionicons name="close" size={20} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
             
-            <Text style={styles.label}>Plan Name</Text>
+            <Text style={styles.label}>GOAL TITLE</Text>
             <TextInput 
               style={styles.input} 
               placeholder="e.g. Vacation, Emergency Fund" 
-              placeholderTextColor="#9CA3AF"
+              placeholderTextColor="#475569"
               value={savingsNameInput}
               onChangeText={setSavingsNameInput}
             />
             
-            <Text style={styles.label}>Target Amount ($)</Text>
-            <TextInput 
-              style={styles.input} 
-              placeholder="5000" 
-              placeholderTextColor="#9CA3AF"
-              keyboardType="numeric"
-              value={savingsTargetInput}
-              onChangeText={setSavingsTargetInput}
-            />
+            <View style={styles.modalInputRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.label}>TARGET ($)</Text>
+                <TextInput 
+                  style={styles.input} 
+                  placeholder="5000" 
+                  placeholderTextColor="#475569"
+                  keyboardType="decimal-pad"
+                  value={savingsTargetInput}
+                  onChangeText={setSavingsTargetInput}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.label}>SAVED ($)</Text>
+                <TextInput 
+                  style={styles.input} 
+                  placeholder="0.00" 
+                  placeholderTextColor="#475569"
+                  keyboardType="decimal-pad"
+                  value={savingsSavedInput}
+                  onChangeText={setSavingsSavedInput}
+                />
+              </View>
+            </View>
 
-            <Text style={styles.label}>Already Saved ($)</Text>
-            <TextInput 
-              style={styles.input} 
-              placeholder="0.00" 
-              placeholderTextColor="#9CA3AF"
-              keyboardType="numeric"
-              value={savingsSavedInput}
-              onChangeText={setSavingsSavedInput}
-            />
-
-            <Text style={styles.label}>Completion Deadline</Text>
+            <Text style={styles.label}>TARGET DATE</Text>
             <TextInput 
               style={styles.input} 
               placeholder="YYYY-MM-DD" 
-              placeholderTextColor="#9CA3AF"
+              placeholderTextColor="#475569"
               value={savingsDeadlineInput}
               onChangeText={setSavingsDeadlineInput}
             />
@@ -500,15 +716,13 @@ export default function PlanScreen() {
                 <Text style={styles.cancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.saveBtn} onPress={handleSaveSavings}>
-                <Text style={styles.saveText}>{editingSavings ? 'Save Changes' : 'Create Plan'}</Text>
+                <Text style={styles.saveText}>{editingSavings ? 'Save Changes' : 'Create Goal'}</Text>
               </TouchableOpacity>
             </View>
 
             {editingSavings && (
-              <TouchableOpacity 
-                style={styles.deleteBtnModal} 
-                onPress={() => handleDeleteSavingsPrompt(editingSavings.id)}
-              >
+              <TouchableOpacity style={styles.deleteBtnModal} onPress={() => handleDeleteSavingsPrompt(editingSavings.id)}>
+                <Ionicons name="trash-outline" size={16} color="#FF6B6B" />
                 <Text style={styles.deleteBtnText}>Delete Savings Plan</Text>
               </TouchableOpacity>
             )}
@@ -522,84 +736,126 @@ export default function PlanScreen() {
 const styles = StyleSheet.create({
   container: { 
     flex: 1, 
-    backgroundColor: COLORS.background, 
-    paddingHorizontal: 16, 
-    paddingTop: 16 
+    backgroundColor: '#070D14', 
+    paddingHorizontal: 20, 
+    paddingTop: 12 
   },
   poolCard: { 
-    backgroundColor: COLORS.card, 
-    borderRadius: 16, 
+    backgroundColor: '#0C1521', 
+    borderRadius: 20, 
     padding: 20, 
-    alignItems: 'center', 
-    shadowColor: '#000', 
-    shadowOpacity: 0.05, 
-    shadowRadius: 5, 
-    elevation: 2, 
-    marginBottom: 16 
+    borderWidth: 1,
+    borderColor: '#192839',
+    marginBottom: 18,
   },
-  poolTitle: { 
-    fontSize: 12, 
-    fontWeight: '600', 
-    color: '#6B7280', 
-    textTransform: 'uppercase', 
-    letterSpacing: 0.5 
+  poolHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  poolEyebrow: { 
+    fontSize: 10, 
+    fontWeight: '800', 
+    color: '#00D293', 
+    letterSpacing: 1.1,
+  },
+  statusTag: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  statusTagPositive: {
+    backgroundColor: '#0C2028',
+    borderColor: '#174747',
+  },
+  statusTagNegative: {
+    backgroundColor: '#1D1620',
+    borderColor: '#3D2028',
+  },
+  statusTagText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  statusTextPositive: {
+    color: '#00D293',
+  },
+  statusTextNegative: {
+    color: '#FF6B6B',
   },
   poolAmount: { 
-    fontSize: 32, 
-    fontWeight: '700', 
-    marginVertical: 4 
+    fontSize: 34, 
+    fontWeight: '800', 
+    marginBottom: 4,
+    letterSpacing: -0.5,
+  },
+  poolAmountPositive: {
+    color: '#FFFFFF',
+  },
+  poolAmountNegative: {
+    color: '#FF6B6B',
+  },
+  poolFooter: {
+    marginTop: 4,
   },
   poolSubtitle: { 
     fontSize: 12, 
-    color: '#9CA3AF' 
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  poolWhite: {
+    color: '#FFFFFF',
+    fontWeight: '700',
   },
   tabActionRow: { 
     flexDirection: 'row', 
     alignItems: 'center', 
     marginBottom: 16, 
-    gap: 10 
+    gap: 12 
   },
   tabContainer: { 
     flex: 1, 
     flexDirection: 'row', 
-    backgroundColor: '#F3F4F6', 
-    borderRadius: 12, 
-    padding: 4 
+    backgroundColor: '#121E2C', 
+    borderRadius: 14, 
+    padding: 4,
+    borderWidth: 1,
+    borderColor: '#192839',
   },
   tab: { 
     flex: 1, 
-    paddingVertical: 10, 
+    paddingVertical: 8, 
     alignItems: 'center', 
     borderRadius: 10 
   },
   activeTab: { 
-    backgroundColor: COLORS.card, 
-    shadowColor: '#000', 
-    shadowOpacity: 0.05, 
-    shadowRadius: 2, 
-    elevation: 1 
+    backgroundColor: '#0C1521', 
+    borderWidth: 1,
+    borderColor: '#1E2D3D',
   },
   tabText: { 
     fontSize: 13, 
     fontWeight: '600', 
-    color: '#6B7280' 
+    color: '#64748B' 
   },
   activeTabText: { 
-    color: COLORS.text, 
+    color: '#FFFFFF',
+    fontWeight: '700',
   },
   addBtn: { 
     flexDirection: 'row', 
     alignItems: 'center', 
-    backgroundColor: COLORS.primary, 
+    backgroundColor: '#00D293', 
     paddingVertical: 10, 
     paddingHorizontal: 14, 
-    borderRadius: 12, 
+    borderRadius: 14, 
     gap: 4 
   },
   addBtnText: { 
-    color: '#FFF', 
-    fontSize: 12, 
-    fontWeight: '600' 
+    color: '#03151E', 
+    fontSize: 13, 
+    fontWeight: '700' 
   },
   contentContainer: { 
     flex: 1 
@@ -607,83 +863,196 @@ const styles = StyleSheet.create({
   listContent: { 
     paddingBottom: 40 
   },
-  card: { 
-    backgroundColor: COLORS.card, 
-    borderRadius: 16, 
-    padding: 18, 
-    marginBottom: 12, 
-    shadowColor: '#000', 
-    shadowOpacity: 0.05, 
-    shadowRadius: 5, 
-    elevation: 2 
+  groupContainer: {
+    marginBottom: 16,
   },
-  cardTop: { 
+  groupHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#121E2C',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1E2D3D',
+    marginBottom: 8,
+  },
+  groupHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  groupTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  groupHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  groupTotals: {
+    fontSize: 12,
+    color: '#64748B',
+    fontWeight: '600',
+    marginRight: 6,
+  },
+  groupActionBtn: {
+    padding: 4,
+    backgroundColor: '#0C1521',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#192839',
+  },
+  groupContent: {
+    paddingLeft: 8,
+  },
+  emptyGroupText: {
+    fontSize: 12,
+    color: '#64748B',
+    fontStyle: 'italic',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+  },
+  card: { 
+    backgroundColor: '#0C1521', 
+    borderRadius: 12, 
+    padding: 14, 
+    marginBottom: 8, 
+    borderWidth: 1,
+    borderColor: '#192839',
+  },
+  cardHeader: { 
     flexDirection: 'row', 
     justifyContent: 'space-between', 
-    alignItems: 'flex-start', 
+    alignItems: 'center', 
     marginBottom: 10 
   },
+  cardHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  cardHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  envelopeIconBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: '#0C2028',
+    borderColor: '#174747',
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  goalIconBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#0C2028',
+    borderColor: '#174747',
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   planName: { 
-    fontSize: 16, 
-    fontWeight: '700', 
-    color: COLORS.text 
-  },
-  deadlineText: { 
-    fontSize: 11, 
-    color: '#6B7280', 
-    marginTop: 2 
-  },
-  savedText: { 
-    fontSize: 18, 
-    fontWeight: '700', 
-    color: COLORS.text 
-  },
-  editIconBtn: { 
-    padding: 4 
-  },
-  percentageText: { 
     fontSize: 14, 
     fontWeight: '700', 
-    color: COLORS.primary 
+    color: '#FFFFFF',
   },
-  amountRow: { 
-    marginBottom: 8 
+  envelopeSub: { 
+    fontSize: 11, 
+    color: '#64748B', 
+    marginTop: 2 
+  },
+  spentHighlight: { 
+    color: '#FF6B6B', 
+    fontWeight: '600' 
+  },
+  targetValue: { 
+    fontSize: 14, 
+    fontWeight: '800', 
+    color: '#FFFFFF' 
+  },
+  editBtn: { 
+    padding: 4 
   },
   barBackground: { 
-    height: 8, 
-    backgroundColor: '#E5E7EB', 
-    borderRadius: 4, 
-    flexDirection: 'row', 
+    height: 6, 
+    backgroundColor: '#121E2C', 
+    borderRadius: 3, 
     overflow: 'hidden', 
     marginBottom: 8 
   },
-  redSpentBar: { 
-    height: '100%', 
-    backgroundColor: '#EF4444' 
-  },
   greenRemainingBar: { 
     height: '100%', 
-    backgroundColor: '#09ff00de' 
+    backgroundColor: '#00D293',
+    borderRadius: 3,
+  },
+  cardFooter: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  footerLabel: { 
+    fontSize: 11, 
+    fontWeight: '600', 
+    color: '#64748B' 
+  },
+  availableAmount: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#00D293',
+  },
+  negativeText: {
+    color: '#FF6B6B',
+  },
+  percentBadge: {
+    backgroundColor: '#0C2028',
+    borderColor: '#174747',
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  percentBadgeText: { 
+    fontSize: 12, 
+    fontWeight: '700', 
+    color: '#00D293' 
+  },
+  savingsValuesRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 4,
+    marginBottom: 8,
+  },
+  savedHighlight: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  goalTargetText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748B',
   },
   progressBarBackground: { 
-    height: 8, 
-    backgroundColor: '#E5E7EB', 
-    borderRadius: 4, 
+    height: 6, 
+    backgroundColor: '#121E2C', 
+    borderRadius: 3, 
     overflow: 'hidden' 
   },
   progressBarFill: { 
     height: '100%', 
-    backgroundColor: '#09ff00de', 
-    borderRadius: 4 
-  },
-  cardFooter: { 
-    flexDirection: 'row', 
-    justifyContent: 'flex-end' 
-  },
-  targetSubText: { 
-    fontSize: 12, 
-    fontWeight: '500', 
-    color: '#6B7280' 
+    backgroundColor: '#00D293', 
+    borderRadius: 3 
   },
   emptyContainer: { 
     alignItems: 'center', 
@@ -691,82 +1060,127 @@ const styles = StyleSheet.create({
     marginTop: 60, 
     paddingHorizontal: 32 
   },
+  emptyIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    backgroundColor: '#0C2028',
+    borderColor: '#174747',
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 6,
+  },
   emptyText: { 
     textAlign: 'center', 
-    color: '#9CA3AF', 
-    fontSize: 13, 
-    marginTop: 10 
+    color: '#64748B', 
+    fontSize: 13,
+    lineHeight: 18,
   },
   modalOverlay: { 
     flex: 1, 
     justifyContent: 'flex-end', 
-    backgroundColor: 'rgba(0,0,0,0.45)' 
+    backgroundColor: 'rgba(0,0,0,0.75)' 
   },
   modalContent: { 
-    backgroundColor: COLORS.card, 
-    padding: 22, 
-    borderTopLeftRadius: 20, 
-    borderTopRightRadius: 20 
+    backgroundColor: '#0C1521', 
+    padding: 24, 
+    borderTopLeftRadius: 24, 
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    borderColor: '#1E2D3D',
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 18,
   },
   modalHeader: { 
-    fontSize: 17, 
-    fontWeight: '700', 
-    marginBottom: 14, 
-    color: COLORS.text 
+    fontSize: 18, 
+    fontWeight: '800', 
+    color: '#FFFFFF' 
+  },
+  modalSubHeader: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  modalCloseBtn: {
+    padding: 4,
   },
   label: { 
-    fontSize: 12, 
-    fontWeight: '600', 
-    color: '#4B5563', 
-    marginBottom: 6 
+    fontSize: 11, 
+    fontWeight: '700', 
+    color: '#64748B', 
+    marginBottom: 6,
+    letterSpacing: 0.8,
   },
   input: { 
     borderWidth: 1, 
-    borderColor: '#E5E7EB', 
-    borderRadius: 8, 
-    padding: 10, 
+    borderColor: '#1E2D3D', 
+    backgroundColor: '#121E2C',
+    borderRadius: 12, 
+    paddingHorizontal: 14, 
+    paddingVertical: 12, 
     fontSize: 14, 
-    marginBottom: 12, 
-    color: COLORS.text 
+    marginBottom: 16, 
+    color: '#FFFFFF' 
+  },
+  modalInputRow: {
+    flexDirection: 'row',
+    gap: 12,
   },
   modalButtons: { 
     flexDirection: 'row', 
-    gap: 10, 
+    gap: 12, 
     marginTop: 10 
   },
   cancelBtn: { 
     flex: 1, 
-    padding: 12, 
-    borderRadius: 8, 
-    backgroundColor: '#F3F4F6', 
+    paddingVertical: 14, 
+    borderRadius: 12, 
+    backgroundColor: '#121E2C', 
+    borderWidth: 1,
+    borderColor: '#1E2D3D',
     alignItems: 'center' 
   },
   cancelText: { 
     fontWeight: '600', 
-    color: '#4B5563' 
+    color: '#94A3B8' 
   },
   saveBtn: { 
-    flex: 1, 
-    padding: 12, 
-    borderRadius: 8, 
-    backgroundColor: COLORS.primary, 
+    flex: 1.5, 
+    paddingVertical: 14, 
+    borderRadius: 12, 
+    backgroundColor: '#00D293', 
     alignItems: 'center' 
   },
   saveText: { 
-    fontWeight: '600', 
-    color: '#FFF' 
+    fontWeight: '700', 
+    color: '#03151E' 
   },
   deleteBtnModal: {
-    marginTop: 12,
-    padding: 12,
-    borderRadius: 8,
-    backgroundColor: '#FEF2F2',
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#1C151B',
     borderWidth: 1,
-    borderColor: '#FEE2E2',
+    borderColor: '#3D1C24',
   },
   deleteBtnText: {
-    color: '#EF4444',
+    color: '#FF6B6B',
     fontWeight: '600',
+    fontSize: 13,
   }
 });

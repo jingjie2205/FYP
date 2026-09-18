@@ -275,7 +275,7 @@ export default function ScanOCRIndexScreen() {
             {selectedImage ? "Receipt Ready" : "Scan or Upload Receipt"}
           </Text>
           <Text style={styles.cardDescription}>
-            Extract items with Gemini 3.6 Flash, match budget envelopes, and create transactions instantly.
+            Extract items, match budget envelopes, and create transactions instantly.
           </Text>
 
           {analyzing ? (
@@ -288,7 +288,7 @@ export default function ScanOCRIndexScreen() {
               {selectedImage && (
                 <TouchableOpacity style={styles.analyzeButton} onPress={processReceiptWithGemini}>
                   <Ionicons name="sparkles" size={18} color="#03151E" />
-                  <Text style={styles.analyzeButtonText}>Analyze with Gemini</Text>
+                  <Text style={styles.analyzeButtonText}>Analyze</Text>
                 </TouchableOpacity>
               )}
 
