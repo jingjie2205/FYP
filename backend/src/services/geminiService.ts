@@ -3,7 +3,8 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const apiKey = process.env.GEMINI_API_KEY;
+const ai = new GoogleGenAI({ apiKey: apiKey || "" });
 
 export interface ReceiptItem {
   name: string;
@@ -21,17 +22,34 @@ export interface ParsedReceipt {
 
 export async function parseReceiptWithGemini(
   base64Image: string,
+  availableCategories: string[] = [],
   mimeType: string = "image/jpeg"
 ): Promise<ParsedReceipt> {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY environment variable is missing on server");
+  }
+
+  const categoryContext =
+    availableCategories.length > 0
+      ? `You MUST choose "suggestedCategory" strictly from this user budget envelope list: [${availableCategories.join(
+          ", "
+        )}]. If none fit cleanly, pick the closest match from that list.`
+      : `Suggest a sensible budget envelope category as "suggestedCategory".`;
+
+  const promptText = `Extract receipt details from this image:
+- "title": Merchant or business name
+- "amount": Grand total paid as a number
+- "date": Date of purchase formatted as YYYY-MM-DD (if missing, use today's date)
+- "suggestedCategory": ${categoryContext}
+- "items": Array of line items with "name" (string) and "price" (number).`;
+
   const response = await ai.models.generateContent({
-    model: "gemini-3.6-flash",
+    model: "gemini-2.5-flash",
     contents: [
       {
         role: "user",
         parts: [
-          {
-            text: "Extract receipt details: merchant name as 'title', total as 'amount', date as 'date' (YYYY-MM-DD), envelope category as 'suggestedCategory', and line items into 'items' (with name, price, category).",
-          },
+          { text: promptText },
           {
             inlineData: {
               data: base64Image,
@@ -57,7 +75,6 @@ export async function parseReceiptWithGemini(
               properties: {
                 name: { type: Type.STRING },
                 price: { type: Type.NUMBER },
-                category: { type: Type.STRING },
               },
               required: ["name", "price"],
             },
