@@ -5,7 +5,7 @@ import rateLimiter from "./middleware/rateLimiter.js";
 import transactionsRoute from "./routes/transactionsRoute.js";
 import usersRoute from "./routes/usersRoute.js";
 import categoriesRoute from "./routes/categoriesRoute.js";
-import budgetsRoute from "./routes/budgetsRoute.js";
+import groupsRoute from "./routes/groupsRoute.js";
 import accountsRoute from "./routes/accountsRoute.js";
 import recurringRoute from "./routes/recurringRoute.js";
 import savingsRoutes from "./routes/savingsRoute.js";
@@ -51,11 +51,11 @@ app.get("/", (req: Request, res: Response) => {
 app.use("/api/transactions", transactionsRoute);
 app.use("/api/users", usersRoute);
 app.use("/api/categories", categoriesRoute);
-app.use("/api/budgets", budgetsRoute);
 app.use("/api/accounts", accountsRoute);
 app.use("/api/recurring", recurringRoute);
 app.use("/api/savings", savingsRoutes);
 app.use("/api/receipts", receiptsRoute);
+app.use("/api/groups", groupsRoute);
 
 // app.listen(PORT, () => {
 //   console.log(`🚀 Server is running on port ${PORT}`);

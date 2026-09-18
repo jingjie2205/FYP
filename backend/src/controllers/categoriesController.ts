@@ -20,18 +20,17 @@ export async function getCategories(req : Request, res : Response) {
 
 export async function createCategory (req : Request, res : Response) {
     try {
-        const { user_id, name, target_amount } = req.body;
+        const { user_id, group_id, name, target_amount } = req.body;
 
-        if (!user_id || !name) {
-            return res.status(400).json({ error: "Missing required fields - user_id and name" });
+        if (!user_id || !group_id || !name) {
+            return res.status(400).json({ error: "Missing required fields - user_id, group_id, and name" });
         }
 
         const assignedAmount = target_amount !== undefined ? Number(target_amount) : 0;
 
-        // In YNAB model, initial current_amount (available) matches the initial target_amount (assigned)
         const [category] = await sql`
-            INSERT INTO categories (user_id, name, target_amount, current_amount)
-            VALUES (${user_id}, ${name}, ${assignedAmount}, ${assignedAmount})
+            INSERT INTO categories (user_id, group_id, name, target_amount, current_amount)
+            VALUES (${user_id}, ${group_id}, ${name}, ${assignedAmount}, ${assignedAmount})
             RETURNING *
         `;
 
@@ -66,7 +65,7 @@ export async function deleteCategory(req : Request, res : Response) {
 export async function updateCategory(req: Request, res: Response) {
     try {
         const { id } = req.params;
-        const { name, target_amount, current_amount } = req.body;
+        const { group_id, name, target_amount, current_amount } = req.body;
 
         if (!id) {
             return res.status(400).json({ error: "Category ID is required" });
@@ -75,6 +74,7 @@ export async function updateCategory(req: Request, res: Response) {
         const [updatedCategory] = await sql`
             UPDATE categories
             SET 
+                group_id = COALESCE(${group_id}, group_id),
                 name = COALESCE(${name}, name),
                 target_amount = COALESCE(${target_amount}, target_amount),
                 current_amount = COALESCE(${current_amount}, current_amount)
