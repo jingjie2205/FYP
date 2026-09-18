@@ -24,7 +24,7 @@ export async function parseReceiptWithGemini(
   mimeType: string = "image/jpeg"
 ): Promise<ParsedReceipt> {
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     contents: [
       {
         role: "user",
