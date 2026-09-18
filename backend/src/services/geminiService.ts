@@ -44,7 +44,7 @@ export async function parseReceiptWithGemini(
 - "items": Array of line items with "name" (string) and "price" (number).`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.6-flash",
     contents: [
       {
         role: "user",
