@@ -1,5 +1,5 @@
 import { sql } from "../config/db.js"
-import express, { Request, Response } from "express";
+import { Request, Response } from "express";
 
 export async function createUser(req : Request, res : Response) {
     try {
@@ -8,20 +8,12 @@ export async function createUser(req : Request, res : Response) {
         if (!user_id || !email) {
             return res.status(400).json({ error: "Missing required fields" });
         }
-
         const user = await sql`
-            WITH new_user AS (
-                INSERT INTO users (id, email)
-                VALUES (${user_id}, ${email})
-                ON CONFLICT (id) DO NOTHING
-                RETURNING *
-            ),
-            new_account AS (
-                INSERT INTO accounts (user_id, name, type, balance, is_default)
-                SELECT id, 'Cash Wallet', 'cash', 0.00, TRUE
-                FROM new_user
-            )
-            SELECT * FROM new_user;
+            INSERT INTO users (id, email)
+            VALUES (${user_id}, ${email})
+            ON CONFLICT (id) DO UPDATE 
+            SET email = EXCLUDED.email
+            RETURNING *
         `;
 
         console.log(user);
