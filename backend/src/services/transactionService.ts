@@ -26,46 +26,32 @@ export async function createTransactionRecord({
   transaction_date
 }: TransactionParams) {
 
-    if (!category_id){
-        const other = await sql `
-            SELECT id FROM categories
-            WHERE name = 'Other'
-            AND is_system = TRUE
-            LIMIT 1
-        ` 
-        if (other.length === 0) {
-            throw new Error("System category 'Other' not found")
-        }
-
-        category_id = other[0].id
-    }
-
-    const result = await sql`
-        INSERT INTO transactions (
-        user_id,
-        account_id,
-        category_id,
-        recurring_id,
-        transfer_account_id,
-        title,
-        amount,
-        type,
-        notes,
-        transaction_date
-        )
-        VALUES (
-        ${user_id},
-        ${account_id},
-        ${category_id},
-        ${recurring_id},
-        ${transfer_account_id},
-        ${title},
-        ${amount},
-        ${type},
-        ${notes},
-        ${transaction_date}
-        )
-        RETURNING *
+  const result = await sql`
+    INSERT INTO transactions (
+      user_id,
+      account_id,
+      category_id,
+      recurring_id,
+      transfer_account_id,
+      title,
+      amount,
+      type,
+      notes,
+      transaction_date
+    )
+    VALUES (
+      ${user_id},
+      ${account_id},
+      ${category_id},
+      ${recurring_id},
+      ${transfer_account_id},
+      ${title},
+      ${amount},
+      ${type},
+      ${notes},
+      ${transaction_date}
+    )
+    RETURNING *
   `
 
   return result[0]
