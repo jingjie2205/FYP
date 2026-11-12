@@ -81,42 +81,70 @@ export async function sendMessage(req: Request, res: Response) {
             return res.status(400).json({ error: "Missing required fields - sessionId, role, content" });
         }
 
-        // Save the incoming message (user or system prompt)
+        // Save the incoming message
         const metadataJson = metadata ? JSON.stringify(metadata) : '{}';
         await sql`
             INSERT INTO chat_messages (session_id, role, content, metadata)
             VALUES (${sessionId}, ${role}, ${content}, ${metadataJson}::jsonb)
         `;
 
-        // If the message sent was from the user, trigger Gemini to generate the assistant reply
+        // If user message, fetch context and trigger Gemini AI
         if (role === 'user') {
-            // Find user_id from session to query user's budgets
             const sessionRows = await sql`SELECT user_id FROM chat_sessions WHERE id = ${sessionId}`;
             const userId = sessionRows[0]?.user_id;
 
-            // Fetch user's budget envelopes/savings plans for context
-            const budgets = userId ? await sql`SELECT name, saved_amount as "currentAmount", target_amount as "targetAmount" FROM savings_plans WHERE user_id = ${userId}` : [];
+            let comprehensiveBudgetContext: any = {
+                savingsPlans: [],
+                categories: [],
+                categoryGroups: [],
+                recurringTransactions: [],
+                recentTransactions: []
+            };
 
-            // Fetch recent conversation history for context window
+            if (userId) {
+                // Fetch all relevant financial contexts concurrently
+                const [
+                    savingsPlans,
+                    categories,
+                    categoryGroups,
+                    recurringTransactions,
+                    recentTransactions
+                ] = await Promise.all([
+                    sql`SELECT name, saved_amount as "currentAmount", target_amount as "targetAmount" FROM savings_plans WHERE user_id = ${userId}`,
+                    sql`SELECT name, budget_limit, spent_amount FROM categories WHERE user_id = ${userId}`,
+                    sql`SELECT name FROM category_groups WHERE user_id = ${userId}`,
+                    sql`SELECT title, amount, frequency, category FROM recurring_transactions WHERE user_id = ${userId}`,
+                    sql`SELECT title, amount, date, category FROM transactions WHERE user_id = ${userId} ORDER BY date DESC LIMIT 15`
+                ]);
+
+                comprehensiveBudgetContext = {
+                    savingsPlans,
+                    categories,
+                    categoryGroups,
+                    recurringTransactions,
+                    recentTransactions
+                };
+            }
+
+            // Fetch session message history for conversation memory
             const historyRows = await sql`
                 SELECT role, content FROM chat_messages 
                 WHERE session_id = ${sessionId} 
                 ORDER BY created_at ASC
             `;
 
-            // Call Gemini service
+            // Call Gemini service with full contextual payload
             const aiResult = await processChatQueryWithGemini(
                 content,
                 historyRows.map(r => ({ role: r.role, content: r.content })),
-                budgets as any
+                comprehensiveBudgetContext
             );
 
-            // Construct response metadata based on AI intent detection
             const aiMetadata = aiResult.actionType === 'reallocation' 
                 ? { actionType: 'reallocation', transferDetails: aiResult.transferDetails }
                 : { actionType: 'none' };
 
-            // Save assistant response 
+            // Save assistant reply to DB
             const aiMessageRows = await sql`
                 INSERT INTO chat_messages (session_id, role, content, metadata)
                 VALUES (${sessionId}, 'assistant', ${aiResult.replyText}, ${JSON.stringify(aiMetadata)}::jsonb)
