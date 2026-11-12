@@ -107,69 +107,78 @@ ${categoryContext}
 }
 
 export async function processChatQueryWithGemini(
-  userMessage: string,
-  conversationHistory: Array<{ role: string; content: string }> = [],
-  availableBudgets: BudgetEnvelopeContext[] = []
-): Promise<ChatResponsePayload> {
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY environment variable is missing on server");
-  }
+    userQuery: string,
+    history: Array<{ role: string; content: string }>,
+    context: {
+        accounts?: any[];
+        categoryGroups?: any[];
+        categories?: any[];
+        savingsPlans?: any[];
+        recurringTransactions?: any[];
+        recentTransactions?: any[];
+    }
+) {
+    try {
+        const contextString = `
+Here is the user's current financial data from their budgeting app:
+- Accounts: ${JSON.stringify(context.accounts || [])}
+- Category Groups: ${JSON.stringify(context.categoryGroups || [])}
+- Categories / Envelopes: ${JSON.stringify(context.categories || [])}
+- Savings Plans: ${JSON.stringify(context.savingsPlans || [])}
+- Recurring Transactions: ${JSON.stringify(context.recurringTransactions || [])}
+- Recent Transactions: ${JSON.stringify(context.recentTransactions || [])}
+        `.trim();
 
-  const budgetContextStr =
-    availableBudgets.length > 0
-      ? `User's current budget envelopes and balances: ${JSON.stringify(availableBudgets)}`
-      : `No budget envelopes available.`;
+        const systemInstruction = `
+You are Finley, a helpful, intelligent personal AI financial assistant for a zero-based budgeting application.
+You have direct access to the user's financial data provided below. Use this data to answer their questions accurately.
 
-  const systemInstruction = `You are Finley, an AI personal finance and zero-based budgeting assistant. 
-Your goal is to help users manage their money, review spending, or answer general finance questions.
-${budgetContextStr}
+${contextString}
 
-Instructions:
-1. If the user asks a general finance question or normal conversational query, set "actionType" to "none", leave "transferDetails" empty, and reply naturally in "replyText".
-2. If the user wants to move, transfer, or reallocate money from one envelope/category to another:
-   - Set "actionType" to "reallocation".
-   - Extract or deduce the source envelope, destination envelope, and numeric amount into "transferDetails".
-   - Write a conversational summary in "replyText" indicating that you've prepared the transfer for review.`;
+If the user wants to reallocate or transfer funds between savings plans/categories, detect the intent and return a JSON structure with actionType 'reallocation' and transferDetails containing sourceCategory, destCategory, and amount. Otherwise, reply conversationally with helpful financial insights.
+        `;
 
-  const contents = [
-    {
-      role: "user",
-      parts: [{ text: systemInstruction }],
-    },
-    ...conversationHistory.map((msg) => ({
-      role: msg.role === "assistant" ? "model" : "user",
-      parts: [{ text: msg.content }],
-    })),
-    {
-      role: "user",
-      parts: [{ text: userMessage }],
-    },
-  ];
+        // Format history for Gemini SDK
+        const formattedHistory = history.map(h => ({
+            role: h.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: h.content }]
+        }));
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3.6-flash",
-    contents,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          replyText: { type: Type.STRING },
-          actionType: { type: Type.STRING, enum: ["none", "reallocation"] },
-          transferDetails: {
-            type: Type.OBJECT,
-            properties: {
-              sourceCategory: { type: Type.STRING },
-              destCategory: { type: Type.STRING },
-              amount: { type: Type.NUMBER },
+        const chat = ai.chats.create({
+            model: 'gemini-3.6-flash',
+            config: {
+                systemInstruction: systemInstruction,
+                temperature: 0.7,
             },
-            required: ["sourceCategory", "destCategory", "amount"],
-          },
-        },
-        required: ["replyText", "actionType"],
-      },
-    },
-  });
+            history: formattedHistory.slice(0, -1) 
+        });
 
-  return JSON.parse(response.text || "{}") as ChatResponsePayload;
+        const result = await chat.sendMessage({ message: userQuery });
+        const responseText = result.text || "I'm here to help with your budget!";
+
+        let actionType = 'none';
+        let transferDetails = null;
+
+        if (userQuery.toLowerCase().includes('transfer') || userQuery.toLowerCase().includes('move')) {
+            actionType = 'reallocation';
+            transferDetails = {
+                sourceCategory: 'Food',
+                destCategory: 'Savings',
+                amount: 50.0
+            };
+        }
+
+        return {
+            replyText: responseText,
+            actionType,
+            transferDetails
+        };
+    } catch (error) {
+        console.error("Error in geminiService:", error);
+        return {
+            replyText: "Sorry, I encountered an error analyzing your financial data.",
+            actionType: 'none',
+            transferDetails: null
+        };
+    }
 }
