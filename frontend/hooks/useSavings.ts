@@ -68,5 +68,22 @@ export const useSavings = (userId: string | undefined) => {
     }
   };
 
-  return { savingsPlans, isLoading, fetchSavings, createSavingsPlan, updateSavingsPlan };
+  const deleteSavingsPlan = async (planId: string) => {
+    try {
+      const response = await fetch(`${API_URL}/savings/${planId}`, { 
+        method: 'DELETE' 
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to delete savings plan');
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Error deleting savings plan:', error);
+      return false;
+    }
+  };
+
+  return { savingsPlans, isLoading, fetchSavings, createSavingsPlan, updateSavingsPlan, deleteSavingsPlan };
 };

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useMemo } from 'react';
 import { Alert } from 'react-native';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL;
@@ -6,7 +6,7 @@ const API_URL = process.env.EXPO_PUBLIC_API_URL;
 export interface Account {
   id: string;
   name: string;
-  type: string; // e.g., 'cash', 'debit', 'credit'
+  type: string;
   balance?: number;
 }
 
@@ -34,6 +34,11 @@ export const useAccounts = (userId: string | undefined) => {
       setIsLoading(false);
     }
   }, [userId]);
+
+  // Calculate the total balance whenever the accounts array changes.
+  const totalAccountsBalance = useMemo(() => {
+    return accounts.reduce((sum, account) => sum + Number(account.balance || 0), 0);
+  }, [accounts]);
 
   const createAccount = async (accountData: { name: string; type: string; balance: number }) => {
     if (!userId) return false;
@@ -117,6 +122,7 @@ export const useAccounts = (userId: string | undefined) => {
 
   return {
     accounts,
+    totalAccountsBalance,
     isLoading,
     fetchAccounts,
     createAccount,
