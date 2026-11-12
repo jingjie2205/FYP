@@ -23,3 +23,30 @@ export async function createAccountWithBalance(user_id : string, name : string, 
 
     return newAccount[0];
 }
+
+export async function getUserFinancialData(userId: string) {
+    const [
+        accounts,
+        categoryGroups,
+        categories,
+        savingsPlans,
+        recurringTransactions,
+        recentTransactions
+    ] = await Promise.all([
+        sql`SELECT * FROM accounts WHERE user_id = ${userId} ORDER BY created_at DESC`,
+        sql`SELECT * FROM category_groups WHERE user_id = ${userId} ORDER BY created_at DESC`,
+        sql`SELECT * FROM categories WHERE user_id = ${userId} ORDER BY created_at DESC`,
+        sql`SELECT * FROM savings_plans WHERE user_id = ${userId} ORDER BY created_at DESC`,
+        sql`SELECT * FROM recurring_transactions WHERE user_id = ${userId} ORDER BY created_at DESC`,
+        sql`SELECT * FROM transactions WHERE user_id = ${userId} ORDER BY created_at DESC LIMIT 20`
+    ]);
+
+    return {
+        accounts,
+        categoryGroups,
+        categories,
+        savingsPlans,
+        recurringTransactions,
+        recentTransactions
+    };
+}

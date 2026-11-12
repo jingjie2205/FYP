@@ -1,6 +1,7 @@
 import { sql } from "../config/db.js";
 import { Request, Response } from "express";
 import { processChatQueryWithGemini } from "../services/geminiService.js";
+import { getUserFinancialData } from "../services/accountService.js"; // Importing the service function
 
 export async function getSessions(req: Request, res: Response) {
     try {
@@ -88,12 +89,13 @@ export async function sendMessage(req: Request, res: Response) {
             VALUES (${sessionId}, ${role}, ${content}, ${metadataJson}::jsonb)
         `;
 
-        // If user message, fetch context and trigger Gemini AI
+        // If user message, fetch context via accountService and trigger Gemini AI
         if (role === 'user') {
             const sessionRows = await sql`SELECT user_id FROM chat_sessions WHERE id = ${sessionId}`;
             const userId = sessionRows[0]?.user_id;
 
             let comprehensiveBudgetContext: any = {
+                accounts: [],
                 savingsPlans: [],
                 categories: [],
                 categoryGroups: [],
@@ -101,23 +103,29 @@ export async function sendMessage(req: Request, res: Response) {
                 recentTransactions: []
             };
 
-            if (userId) {
-                // Fetch all relevant financial contexts concurrently
+            if (userId && typeof getUserFinancialData === 'function') {
+                // Fetch comprehensive user financial context using the service
+                comprehensiveBudgetContext = await getUserFinancialData(userId);
+            } else if (userId) {
+                // Fallback concurrent query set if service signature differs slightly
                 const [
+                    accounts,
                     savingsPlans,
                     categories,
                     categoryGroups,
                     recurringTransactions,
                     recentTransactions
                 ] = await Promise.all([
+                    sql`SELECT * FROM accounts WHERE user_id = ${userId} ORDER BY created_at DESC`,
                     sql`SELECT name, saved_amount as "currentAmount", target_amount as "targetAmount" FROM savings_plans WHERE user_id = ${userId}`,
                     sql`SELECT name, budget_limit, spent_amount FROM categories WHERE user_id = ${userId}`,
                     sql`SELECT name FROM category_groups WHERE user_id = ${userId}`,
-                    sql`SELECT title, amount, frequency, category FROM recurring_transactions WHERE user_id = ${userId}`,
-                    sql`SELECT title, amount, date, category FROM transactions WHERE user_id = ${userId} ORDER BY date DESC LIMIT 15`
+                    sql`SELECT rt.title, rt.amount, rt.frequency, c.name as category FROM recurring_transactions rt LEFT JOIN categories c ON rt.category_id = c.id WHERE rt.user_id = ${userId}`,
+                    sql`SELECT t.title, t.amount, t.date, c.name as category FROM transactions t LEFT JOIN categories c ON t.category_id = c.id WHERE t.user_id = ${userId} ORDER BY t.date DESC LIMIT 15`
                 ]);
 
                 comprehensiveBudgetContext = {
+                    accounts,
                     savingsPlans,
                     categories,
                     categoryGroups,
@@ -133,7 +141,7 @@ export async function sendMessage(req: Request, res: Response) {
                 ORDER BY created_at ASC
             `;
 
-            // Call Gemini service with full contextual payload
+            // Call Gemini service
             const aiResult = await processChatQueryWithGemini(
                 content,
                 historyRows.map(r => ({ role: r.role, content: r.content })),
@@ -144,7 +152,7 @@ export async function sendMessage(req: Request, res: Response) {
                 ? { actionType: 'reallocation', transferDetails: aiResult.transferDetails }
                 : { actionType: 'none' };
 
-            // Save assistant reply to DB
+            // Save assistant reply
             const aiMessageRows = await sql`
                 INSERT INTO chat_messages (session_id, role, content, metadata)
                 VALUES (${sessionId}, 'assistant', ${aiResult.replyText}, ${JSON.stringify(aiMetadata)}::jsonb)
