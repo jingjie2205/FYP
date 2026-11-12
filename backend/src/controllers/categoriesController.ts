@@ -98,7 +98,7 @@ export async function reallocateBudget(req: Request, res: Response) {
         const userId = Array.isArray(req.body.userId) ? req.body.userId[0] : req.body.userId;
         const { sourceName, destName, amount } = req.body;
 
-        // 1. Basic input validation
+        // Input validation
         if (!userId || !sourceName || !destName || amount === undefined) {
             return res.status(400).json({ error: "Missing required fields: userId, sourceName, destName, amount" });
         }
@@ -133,7 +133,7 @@ export async function reallocateBudget(req: Request, res: Response) {
             return res.status(404).json({ error: `Destination budget "${destName}" not found` });
         }
 
-        // 3. HARDENED VALIDATION: Ensure source has enough available funds
+        // Ensure source has enough available funds
         const availableBalance = Number(sourceBudget.current_amount);
 
         if (transferAmount > availableBalance) {
@@ -142,7 +142,7 @@ export async function reallocateBudget(req: Request, res: Response) {
             });
         }
 
-        // 4. Execute updates sequentially
+        // Updates sequentially
         await sql`
             UPDATE categories 
             SET current_amount = current_amount - ${transferAmount}

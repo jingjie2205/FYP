@@ -3,7 +3,8 @@ import {
     getCategories, 
     createCategory, 
     updateCategory, 
-    deleteCategory 
+    deleteCategory, 
+    reallocateBudget
 } from "../controllers/categoriesController.js"
 
 const router = express.Router()
@@ -19,5 +20,8 @@ router.patch("/:id", updateCategory);
 
 // DELETE category by id
 router.delete("/:id", deleteCategory)
+
+// Swap amount between budgets
+router.post('/reallocate', reallocateBudget)
 
 export default router
