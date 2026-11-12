@@ -10,6 +10,7 @@ import accountsRoute from "./routes/accountsRoute.js";
 import recurringRoute from "./routes/recurringRoute.js";
 import savingsRoutes from "./routes/savingsRoute.js";
 import receiptsRoute from "./routes/receiptsRoute.js";
+import chatRouter from './routes/chatRoute.js';
 import job from "./config/cron.js";
 
 dotenv.config();
@@ -56,6 +57,7 @@ app.use("/api/recurring", recurringRoute);
 app.use("/api/savings", savingsRoutes);
 app.use("/api/receipts", receiptsRoute);
 app.use("/api/groups", groupsRoute);
+app.use('/api/chat', chatRouter);
 
 // app.listen(PORT, () => {
 //   console.log(`🚀 Server is running on port ${PORT}`);
