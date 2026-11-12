@@ -117,16 +117,22 @@ export async function processChatQueryWithGemini(
         recurringTransactions?: any[];
         recentTransactions?: any[];
     }
-) {
+): Promise<ChatResponsePayload> {
     try {
         const contextString = `
 Here is the user's current financial data from their budgeting app:
-- Accounts: ${JSON.stringify(context.accounts || [])}
-- Category Groups: ${JSON.stringify(context.categoryGroups || [])}
-- Categories / Envelopes: ${JSON.stringify(context.categories || [])}
-- Savings Plans: ${JSON.stringify(context.savingsPlans || [])}
-- Recurring Transactions: ${JSON.stringify(context.recurringTransactions || [])}
-- Recent Transactions: ${JSON.stringify(context.recentTransactions || [])}
+- Accounts: 
+${JSON.stringify(context.accounts || [])}
+- Category Groups: 
+${JSON.stringify(context.categoryGroups || [])}
+- Categories / Envelopes: 
+${JSON.stringify(context.categories || [])}
+- Savings Plans: 
+${JSON.stringify(context.savingsPlans || [])}
+- Recurring Transactions: 
+${JSON.stringify(context.recurringTransactions || [])}
+- Recent Transactions: 
+${JSON.stringify(context.recentTransactions || [])}
         `.trim();
 
         const systemInstruction = `
@@ -135,7 +141,8 @@ You have direct access to the user's financial data provided below. Use this dat
 
 ${contextString}
 
-If the user wants to reallocate or transfer funds between savings plans/categories, detect the intent and return a JSON structure with actionType 'reallocation' and transferDetails containing sourceCategory, destCategory, and amount. Otherwise, reply conversationally with helpful financial insights.
+If the user wants to reallocate or transfer funds between budget categories or savings envelopes, set actionType to 'reallocation' and provide 'transferDetails' containing sourceCategory, destCategory, and amount. Otherwise, set actionType to 'none'.
+You must respond strictly in JSON format matching the requested schema with "replyText", "actionType", and optional "transferDetails".
         `;
 
         // Format history for Gemini SDK
@@ -149,36 +156,54 @@ If the user wants to reallocate or transfer funds between savings plans/categori
             config: {
                 systemInstruction: systemInstruction,
                 temperature: 0.7,
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        replyText: { type: Type.STRING },
+                        actionType: { type: Type.STRING, enum: ["none", "reallocation"] },
+                        transferDetails: {
+                            type: Type.OBJECT,
+                            properties: {
+                                sourceCategory: { type: Type.STRING },
+                                destCategory: { type: Type.STRING },
+                                amount: { type: Type.NUMBER }
+                            },
+                            required: ["sourceCategory", "destCategory", "amount"]
+                        }
+                    },
+                    required: ["replyText", "actionType"]
+                }
             },
             history: formattedHistory.slice(0, -1) 
         });
 
         const result = await chat.sendMessage({ message: userQuery });
-        const responseText = result.text || "I'm here to help with your budget!";
+        const rawText = result.text || "{}";
 
-        let actionType = 'none';
-        let transferDetails = null;
-
-        if (userQuery.toLowerCase().includes('transfer') || userQuery.toLowerCase().includes('move')) {
-            actionType = 'reallocation';
-            transferDetails = {
-                sourceCategory: 'Food',
-                destCategory: 'Savings',
-                amount: 50.0
+        let parsed: any = {};
+        try {
+            parsed = JSON.parse(rawText);
+        } catch {
+            parsed = {
+                replyText: rawText.replace(/```json[\s\S]*?```/g, '').trim() || "I'm here to help with your budget!",
+                actionType: "none"
             };
         }
 
+        let replyText = parsed.replyText || "I've processed your budget query.";
+        replyText = replyText.replace(/```json[\s\S]*?```/g, '').trim();
+
         return {
-            replyText: responseText,
-            actionType,
-            transferDetails
+            replyText,
+            actionType: parsed.actionType === "reallocation" ? "reallocation" : "none",
+            transferDetails: parsed.actionType === "reallocation" ? parsed.transferDetails : undefined
         };
     } catch (error) {
         console.error("Error in geminiService:", error);
         return {
             replyText: "Sorry, I encountered an error analyzing your financial data.",
             actionType: 'none',
-            transferDetails: null
         };
     }
 }
