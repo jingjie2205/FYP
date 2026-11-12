@@ -6,7 +6,6 @@ export async function getAccounts(req : Request, res : Response){
     try {
         const { userId } = req.params
 
-        // Removed 'type' from SELECT
         const accounts = await sql`
             SELECT 
                 id,
@@ -55,7 +54,6 @@ export async function updateAccount(req: Request, res: Response) {
             return res.status(400).json({ error: "Account ID is required" });
         }
 
-        // Removed 'type' from UPDATE
         const [updatedAccount] = await sql`
             UPDATE accounts
             SET 
