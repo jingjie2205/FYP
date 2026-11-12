@@ -22,14 +22,14 @@ export const styles = StyleSheet.create({
     textAlign: "center",
   },
   input: {
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.card || "#121E2C",
     borderRadius: 12,
     padding: 15,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: COLORS.border || "#192839",
     fontSize: 16,
-    color: COLORS.text,
+    color: "#FFFFFF",
   },
   errorInput: {
     borderColor: COLORS.expense,
@@ -77,14 +77,14 @@ export const styles = StyleSheet.create({
     textAlign: "center",
   },
   verificationInput: {
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.card || "#121E2C", // Change from COLORS.white to dark background
     borderRadius: 12,
     padding: 15,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: COLORS.border || "#192839",
     fontSize: 16,
-    color: COLORS.text,
+    color: "#FFFFFF", // Force text color to white for visibility
     width: "100%",
     textAlign: "center",
     letterSpacing: 2,
