@@ -114,7 +114,11 @@ export default function AnalyticsScreen() {
     return [{ value: 1, text: '0', color: '#1E2D3D', label: 'No Data' }];
   }, [hasTransactions, chartMode, transactions, categories]);
 
-  const totalDonutValue = pieChartData.reduce((sum, item) => sum + (item.label !== 'No Data' ? item.value : 0), 0);
+  const totalDonutValue = pieChartData.reduce(
+  (sum, item) =>
+    sum + (item.label !== 'No Data' && item.label !== 'No Expenses' ? item.value : 0),
+    0
+  );
 
   // 2. Grouped Bar Chart Data: Target vs Actual Spent
   const groupedBarData = useMemo(() => {
@@ -138,6 +142,12 @@ export default function AnalyticsScreen() {
     });
     return data;
   }, [categories]);
+
+  // Dynamic Max Value for Bar Chart to prevent top-clipping
+  const maxBarValue = useMemo(() => {
+    const highestVal = groupedBarData.reduce((max, item) => Math.max(max, item.value), 1);
+    return Math.ceil(highestVal * 1.2); // Add 20% headroom
+  }, [groupedBarData]);
 
   // 3. Cash Flow Trajectory Line Data
   const lineChartData = useMemo(() => {
@@ -164,6 +174,12 @@ export default function AnalyticsScreen() {
       };
     });
   }, [transactions, hasTransactions]);
+
+  // Dynamic Max Value for Line Chart to prevent top-clipping
+  const maxLineValue = useMemo(() => {
+    const highestPositive = lineChartData.reduce((max, item) => Math.max(max, item.value), 1);
+    return Math.ceil(highestPositive * 1.2); // Add 20% headroom
+  }, [lineChartData]);
 
   if (!isUserLoaded) {
     return (
@@ -262,7 +278,7 @@ export default function AnalyticsScreen() {
                 animationDuration={800}
                 radius={80}
                 innerRadius={55}
-                innerCircleColor="#0C1521" // Matches card background perfectly
+                innerCircleColor="#0C1521"
                 centerLabelComponent={() => (
                   <View style={{ alignItems: 'center', justifyContent: 'center' }}>
                     <Text style={styles.donutCenterSub}>Total</Text>
@@ -276,7 +292,9 @@ export default function AnalyticsScreen() {
                   <View key={idx} style={styles.legendRow}>
                     <View style={[styles.legendIndicator, { backgroundColor: item.color }]} />
                     <Text style={styles.legendLabel} numberOfLines={1}>{item.label}</Text>
-                    <Text style={styles.legendValue}>${Number(item.value).toFixed(0)}</Text>
+                    <Text style={styles.legendValue}>
+                      ${item.label === 'No Expenses' || item.label === 'No Data' ? '0' : Number(item.value).toFixed(0)}
+                    </Text>
                   </View>
                 ))}
               </View>
@@ -313,6 +331,7 @@ export default function AnalyticsScreen() {
             <View style={{ alignItems: 'center', marginTop: 10 }}>
               <BarChart
                 data={groupedBarData}
+                maxValue={maxBarValue}
                 isAnimated
                 barWidth={18}
                 spacing={24}
@@ -348,6 +367,7 @@ export default function AnalyticsScreen() {
           <View style={{ alignItems: 'center', marginTop: 10 }}>
             <LineChart
               data={lineChartData}
+              maxValue={maxLineValue}
               isAnimated
               animateOnDataChange
               animationDuration={1000}
@@ -510,6 +530,7 @@ const styles = StyleSheet.create({
     padding: 20,
     borderWidth: 1,
     borderColor: '#192839',
+    overflow: 'hidden', // mathematically clips the SVG chart bleed
   },
   cardHeaderRow: {
     flexDirection: 'row',

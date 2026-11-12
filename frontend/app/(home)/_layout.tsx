@@ -46,7 +46,7 @@ export default function HomeLayout() {
       <Tabs.Screen
         name="scan-ocr"
         options={{
-          title: "Scan OCR",
+          title: "Scan",
           tabBarIcon: ({ color, focused }) => (
             <View style={styles.ocrIconWrapper}>
               {focused && <View style={styles.activePillDot} />}
@@ -91,7 +91,7 @@ export default function HomeLayout() {
       <Tabs.Screen
         name="ai-chat"
         options={{
-          title: "Finley AI",
+          title: "Chat",
           tabBarIcon: ({ color, focused }) => (
             <MaterialCommunityIcons
               name={focused ? "robot" : "robot-outline"}

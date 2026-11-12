@@ -133,8 +133,52 @@ export default function Page() {
     ]);
   };
 
+  // ==========================================
+  // DYNAMIC RUNNING BALANCE CALCULATION
+  // ==========================================
   const accountCards: CarouselAccountCard[] = useMemo(() => {
-    const totalBalance = accounts.reduce((sum, acc: any) => sum + Number(acc.balance || 0), 0);
+    // 1. Group transactions by account
+    const accTxsMap: Record<string, any[]> = {};
+    (transactions || []).forEach((t: any) => {
+      if (!accTxsMap[t.account_id]) accTxsMap[t.account_id] = [];
+      accTxsMap[t.account_id].push(t);
+    });
+
+    // 2. Map individual cards securely to avoid double-counting
+    const individualCards: CarouselAccountCard[] = accounts.map((acc: any) => {
+      const baseBalance = Number(acc.balance || 0);
+      const accTxs = accTxsMap[acc.id] || [];
+      
+      let netTransactionFlow = 0;
+      let hasInitialTxInLedger = false;
+
+      accTxs.forEach((t) => {
+        const amt = Number(t.amount || 0);
+        if (t.type === 'income') netTransactionFlow += amt;
+        else if (t.type === 'expense') netTransactionFlow -= amt;
+
+        // Detect if the starting balance is physically recorded as a transaction
+        const txName = String(t.name || t.title || t.description || '').toLowerCase();
+        if (txName.includes('initial balance')) {
+          hasInitialTxInLedger = true;
+        }
+      });
+
+      // FIX: If the backend already created an "Initial Balance" transaction, 
+      // adding the baseBalance again causes double-counting!
+      const trueBalance = hasInitialTxInLedger ? netTransactionFlow : baseBalance + netTransactionFlow;
+
+      return {
+        id: acc.id,
+        name: acc.name,
+        type: acc.type ? acc.type.toUpperCase() : 'ACCOUNT',
+        balance: trueBalance,
+      };
+    });
+
+    // 3. Aggregate total for the overview card
+    const totalBalance = individualCards.reduce((sum, acc) => sum + acc.balance, 0);
+    
     const overviewCard: CarouselAccountCard = {
       id: 'all',
       name: 'All Accounts',
@@ -142,13 +186,6 @@ export default function Page() {
       balance: totalBalance,
       isOverview: true
     };
-
-    const individualCards: CarouselAccountCard[] = accounts.map((acc: any) => ({
-      id: acc.id,
-      name: acc.name,
-      type: acc.type ? acc.type.toUpperCase() : 'ACCOUNT',
-      balance: Number(acc.balance || 0),
-    }));
 
     const addCard: CarouselAccountCard = {
       id: 'add-new-account',
@@ -159,7 +196,7 @@ export default function Page() {
     };
 
     return [overviewCard, ...individualCards, addCard];
-  }, [accounts]);
+  }, [accounts, transactions]); 
 
   const isPageLoading = (isTransactionsLoading || isAccountsLoading) && !refreshing && isSignedIn;
   if (isPageLoading) return <PageLoader />

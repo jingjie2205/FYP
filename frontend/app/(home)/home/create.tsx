@@ -18,7 +18,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { API_URL } from "@/constants/api";
 import { useCategories } from "../../../hooks/useCategories"; 
-import { useAccounts } from "../../../hooks/useAccounts";
+import { Account, useAccounts } from "../../../hooks/useAccounts";
 
 const CreateScreen = () => {
   const router = useRouter();
@@ -178,7 +178,7 @@ const CreateScreen = () => {
             <ActivityIndicator size="small" color="#00D293" style={{ marginVertical: 20 }} />
           ) : (
             <View style={styles.grid}>
-              {accounts.map((account) => {
+              {accounts.map((account: Account) => {
                 const isActive = selectedAccount === account.id;
                 return (
                   <TouchableOpacity
