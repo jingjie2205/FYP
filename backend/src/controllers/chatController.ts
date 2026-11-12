@@ -69,18 +69,11 @@ export async function sendMessage(req: Request, res: Response) {
 
         const metadataJson = metadata ? JSON.stringify(metadata) : '{}';
 
-        // 1. Insert message
+        // Insert message (PostgreSQL handles created_at natively)
         const message = await sql`
             INSERT INTO chat_messages (session_id, role, content, metadata)
             VALUES (${sessionId}, ${role}, ${content}, ${metadataJson}::jsonb)
             RETURNING *
-        `;
-
-        // 2. Touch/update the session's updated_at timestamp
-        await sql`
-            UPDATE chat_sessions 
-            SET updated_at = DEFAULT 
-            WHERE id = ${sessionId}
         `;
 
         res.status(201).json(message[0]);
