@@ -1,6 +1,33 @@
 import { sql } from "../config/db.js"
 import { Request, Response } from "express";
 
+async function findUserCategory(userId: string, inputName: string) {
+  const cleanInput = inputName.trim();
+  if (!cleanInput) return null;
+
+  // Exact case-insensitive match
+  const [exactMatch] = await sql`
+    SELECT id, name, current_amount, target_amount 
+    FROM categories 
+    WHERE user_id = ${userId} AND LOWER(TRIM(name)) = LOWER(${cleanInput})
+    LIMIT 1
+  `;
+  if (exactMatch) return exactMatch;
+
+  // Partial / substring match
+  const [partialMatch] = await sql`
+    SELECT id, name, current_amount, target_amount 
+    FROM categories 
+    WHERE user_id = ${userId} 
+      AND (
+        name ILIKE ${`%${cleanInput}%`} 
+        OR ${cleanInput} ILIKE '%' || name || '%'
+      )
+    LIMIT 1
+  `;
+  return partialMatch || null;
+}
+
 export async function getCategories(req : Request, res : Response) {
     try {
         const { userId } = req.params
@@ -94,80 +121,91 @@ export async function updateCategory(req: Request, res: Response) {
 }
 
 export async function reallocateBudget(req: Request, res: Response) {
-    try {
-        const userId = Array.isArray(req.body.userId) ? req.body.userId[0] : req.body.userId;
-        const { sourceName, destName, amount } = req.body;
+  try {
+    const userId = Array.isArray(req.body.userId)
+      ? req.body.userId[0]
+      : req.body.userId;
+    const { sourceName, destName, amount } = req.body;
 
-        // Input validation
-        if (!userId || !sourceName || !destName || amount === undefined) {
-            return res.status(400).json({ error: "Missing required fields: userId, sourceName, destName, amount" });
-        }
-
-        const transferAmount = Number(amount);
-        if (isNaN(transferAmount) || transferAmount <= 0) {
-            return res.status(400).json({ error: "Transfer amount must be a positive number" });
-        }
-
-        if (sourceName.toLowerCase() === destName.toLowerCase()) {
-            return res.status(400).json({ error: "Source and destination budgets cannot be the same" });
-        }
-
-        // Fetch source and destination categories
-        const [sourceBudget] = await sql`
-            SELECT id, name, current_amount, target_amount 
-            FROM categories 
-            WHERE user_id = ${userId} AND LOWER(name) = LOWER(${sourceName})
-        `;
-
-        const [destBudget] = await sql`
-            SELECT id, name, current_amount, target_amount 
-            FROM categories 
-            WHERE user_id = ${userId} AND LOWER(name) = LOWER(${destName})
-        `;
-
-        if (!sourceBudget) {
-            return res.status(404).json({ error: `Source budget "${sourceName}" not found` });
-        }
-
-        if (!destBudget) {
-            return res.status(404).json({ error: `Destination budget "${destName}" not found` });
-        }
-
-        // Ensure source has enough available funds
-        const availableBalance = Number(sourceBudget.current_amount);
-
-        if (transferAmount > availableBalance) {
-            return res.status(400).json({ 
-                error: `Insufficient funds. Cannot transfer $${transferAmount.toFixed(2)} from "${sourceBudget.name}" because it only has $${availableBalance.toFixed(2)} available.` 
-            });
-        }
-
-        // Updates sequentially
-        await sql`
-            UPDATE categories 
-            SET current_amount = current_amount - ${transferAmount}
-            WHERE id = ${sourceBudget.id}
-        `;
-
-        await sql`
-            UPDATE categories 
-            SET current_amount = current_amount + ${transferAmount}
-            WHERE id = ${destBudget.id}
-        `;
-
-        return res.status(200).json({
-            message: "Budget successfully reallocated",
-            transfer: {
-                source: sourceBudget.name,
-                destination: destBudget.name,
-                amount: transferAmount,
-                newSourceBalance: availableBalance - transferAmount,
-                newDestBalance: Number(destBudget.current_amount) + transferAmount
-            }
-        });
-
-    } catch (e: any) {
-        console.error("Error executing budget reallocation:", e);
-        res.status(500).json({ error: "Internal server error during reallocation", details: e.message });
+    // Input validation
+    if (!userId || !sourceName || !destName || amount === undefined) {
+      return res.status(400).json({
+        error: "Missing required fields: userId, sourceName, destName, amount",
+      });
     }
+
+    const transferAmount = Number(amount);
+    if (isNaN(transferAmount) || transferAmount <= 0) {
+      return res.status(400).json({
+        error: "Transfer amount must be a positive number",
+      });
+    }
+
+    // Lookup source and destination categories
+    const sourceBudget = await findUserCategory(userId, String(sourceName));
+    const destBudget = await findUserCategory(userId, String(destName));
+
+    if (!sourceBudget) {
+      return res.status(404).json({
+        error: `Source budget "${sourceName}" not found`,
+      });
+    }
+
+    if (!destBudget) {
+      return res.status(404).json({
+        error: `Destination budget "${destName}" not found`,
+      });
+    }
+
+    if (sourceBudget.id === destBudget.id) {
+      return res.status(400).json({
+        error: "Source and destination budgets cannot be the same",
+      });
+    }
+
+    // Validate available funds in source envelope
+    const availableBalance = Number(sourceBudget.current_amount);
+
+    if (transferAmount > availableBalance) {
+      return res.status(400).json({
+        error: `Insufficient funds. Cannot transfer $${transferAmount.toFixed(
+          2
+        )} from "${sourceBudget.name}" because it only has $${availableBalance.toFixed(
+          2
+        )} available.`,
+      });
+    }
+
+    // Execute updates and return updated rows
+    const [updatedSource] = await sql`
+      UPDATE categories 
+      SET current_amount = current_amount - ${transferAmount}
+      WHERE id = ${sourceBudget.id}
+      RETURNING *
+    `;
+
+    const [updatedDest] = await sql`
+      UPDATE categories 
+      SET current_amount = current_amount + ${transferAmount}
+      WHERE id = ${destBudget.id}
+      RETURNING *
+    `;
+
+    return res.status(200).json({
+      message: "Budget successfully reallocated",
+      transfer: {
+        source: updatedSource.name,
+        destination: updatedDest.name,
+        amount: transferAmount,
+        newSourceBalance: Number(updatedSource.current_amount),
+        newDestBalance: Number(updatedDest.current_amount),
+      },
+    });
+  } catch (e: any) {
+    console.error("Error executing budget reallocation:", e);
+    return res.status(500).json({
+      error: "Internal server error during reallocation",
+      details: e.message,
+    });
+  }
 }
