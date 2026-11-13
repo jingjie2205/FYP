@@ -9,6 +9,9 @@ import {
 
 const router = express.Router()
 
+// Swap amount between budgets
+router.post('/reallocate', reallocateBudget)
+
 // GET categories by user_id
 router.get("/:userId", getCategories)
 
@@ -20,8 +23,5 @@ router.patch("/:id", updateCategory);
 
 // DELETE category by id
 router.delete("/:id", deleteCategory)
-
-// Swap amount between budgets
-router.post('/reallocate', reallocateBudget)
 
 export default router
