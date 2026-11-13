@@ -163,30 +163,30 @@ export async function reallocateBudget(req: Request, res: Response) {
       });
     }
 
-    // Validate available funds in source envelope
-    const availableBalance = Number(sourceBudget.current_amount);
+    // Validate against total allocated budget (target_amount)
+    const sourceAllocated = Number(sourceBudget.target_amount ?? 0);
 
-    if (transferAmount > availableBalance) {
+    if (transferAmount > sourceAllocated) {
       return res.status(400).json({
-        error: `Insufficient funds. Cannot transfer $${transferAmount.toFixed(
+        error: `Insufficient allocated budget. Cannot transfer $${transferAmount.toFixed(
           2
-        )} from "${sourceBudget.name}" because it only has $${availableBalance.toFixed(
+        )} from "${sourceBudget.name}" because its total allocated budget is only $${sourceAllocated.toFixed(
           2
-        )} available.`,
+        )}.`,
       });
     }
 
-    // Execute updates and return updated rows
+    // Update target_amount on both categories
     const [updatedSource] = await sql`
       UPDATE categories 
-      SET current_amount = current_amount - ${transferAmount}
+      SET target_amount = target_amount - ${transferAmount}
       WHERE id = ${sourceBudget.id}
       RETURNING *
     `;
 
     const [updatedDest] = await sql`
       UPDATE categories 
-      SET current_amount = current_amount + ${transferAmount}
+      SET target_amount = target_amount + ${transferAmount}
       WHERE id = ${destBudget.id}
       RETURNING *
     `;
@@ -197,8 +197,10 @@ export async function reallocateBudget(req: Request, res: Response) {
         source: updatedSource.name,
         destination: updatedDest.name,
         amount: transferAmount,
-        newSourceBalance: Number(updatedSource.current_amount),
-        newDestBalance: Number(updatedDest.current_amount),
+        previousSourceAllocated: sourceAllocated,
+        newSourceBalance: Number(updatedSource.target_amount),
+        previousDestAllocated: Number(destBudget.target_amount),
+        newDestBalance: Number(updatedDest.target_amount),
       },
     });
   } catch (e: any) {
