@@ -119,58 +119,56 @@ export async function processChatQueryWithGemini(
   }
 ): Promise<ChatResponsePayload> {
   try {
-    // Extract exact category names from the user's database records
-    const validCategoryNames: string[] = (context.categories || [])
-      .map((c: any) => c.name)
+    const slimCategories = (context.categories || []).map((c: any) => ({
+      name: c.name,
+      allocatedBudget: Number(c.target_amount ?? 0),
+    }));
+
+    const validCategoryNames: string[] = slimCategories
+      .map((c) => c.name)
       .filter(Boolean);
 
-    // Constrain Gemini's schema to only pick from valid user categories
-    const categoryFieldSchema =
-      validCategoryNames.length > 0
-        ? { type: Type.STRING, enum: validCategoryNames }
-        : { type: Type.STRING };
+    const slimSavings = (context.savingsPlans || []).map((s: any) => ({
+      name: s.name,
+      savedAmount: Number(s.saved_amount ?? 0),
+      targetAmount: Number(s.target_amount ?? 0),
+    }));
 
-    const contextString = `
-Here is the user's current financial data from their budgeting app:
-- Accounts: 
-${JSON.stringify(context.accounts || [])}
-- Category Groups: 
-${JSON.stringify(context.categoryGroups || [])}
-- Categories / Envelopes: 
-${JSON.stringify(context.categories || [])}
-- Savings Plans: 
-${JSON.stringify(context.savingsPlans || [])}
-- Recurring Transactions: 
-${JSON.stringify(context.recurringTransactions || [])}
-- Recent Transactions: 
-${JSON.stringify(context.recentTransactions || [])}
-    `.trim();
+    const slimRecentTx = (context.recentTransactions || [])
+      .slice(0, 15)
+      .map((t: any) => ({
+        title: t.title || t.merchant || t.description,
+        amount: Number(t.amount ?? 0),
+        category: t.category_name || t.category,
+        date: t.date || t.created_at,
+      }));
 
     const systemInstruction = `
 You are Finley, a helpful, intelligent personal AI financial assistant for a zero-based budgeting application.
-You have direct access to the user's financial data provided below. Use this data to answer their questions accurately.
+You have direct access to the user's financial data below:
 
-${contextString}
+- Budget Categories (Total Allocated Budgets): ${JSON.stringify(slimCategories)}
+- Savings Plans: ${JSON.stringify(slimSavings)}
+- Recent Transactions (last 15): ${JSON.stringify(slimRecentTx)}
 
 CRITICAL REALLOCATION RULES:
 1. If the user wants to reallocate, move, or transfer funds between budget categories (e.g., "transfer $20 from food to transport"), set "actionType" to "reallocation".
-2. Map the user's casual/shorthand terms to the closest matching category name from this exact list: ${JSON.stringify(validCategoryNames)}.
-3. You MUST set "sourceCategory" and "destCategory" in "transferDetails" to the EXACT string from that list (including any ampersands, symbols, or emojis).
-4. In "replyText", write a brief, natural confirmation message (e.g., "I've prepared the transfer of $20.00 from Dining & Food Delivery to Public Commute for you."). NEVER include raw JSON or markdown code blocks inside "replyText".
-5. If the user's request is not a transfer or is too ambiguous to match any existing category, set "actionType" to "none" and reply conversationally in "replyText".
+2. Map the user's casual/shorthand terms to the closest matching category from this exact list: ${JSON.stringify(validCategoryNames)}.
+3. You MUST set "sourceCategory" and "destCategory" in "transferDetails" to the EXACT string from that list.
+4. In "replyText", write a brief, natural confirmation message. NEVER include raw JSON or markdown code blocks inside "replyText".
+5. If the user's request is a general question and not a budget transfer, set "actionType" to "none" and reply conversationally in "replyText".
     `.trim();
 
-    // Format history for Gemini SDK
-    const formattedHistory = history.map((h) => ({
+    const formattedHistory = history.slice(-11, -1).map((h) => ({
       role: h.role === "assistant" ? "model" : "user",
-      parts: [{ text: h.content }],
+      parts: [{ text: h.content || "" }],
     }));
 
     const chat = ai.chats.create({
       model: "gemini-3.6-flash",
       config: {
         systemInstruction: systemInstruction,
-        temperature: 0.2,
+        temperature: 0.1,
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -180,8 +178,8 @@ CRITICAL REALLOCATION RULES:
             transferDetails: {
               type: Type.OBJECT,
               properties: {
-                sourceCategory: categoryFieldSchema,
-                destCategory: categoryFieldSchema,
+                sourceCategory: { type: Type.STRING },
+                destCategory: { type: Type.STRING },
                 amount: { type: Type.NUMBER },
               },
               required: ["sourceCategory", "destCategory", "amount"],
@@ -190,7 +188,7 @@ CRITICAL REALLOCATION RULES:
           required: ["replyText", "actionType"],
         },
       },
-      history: formattedHistory.slice(0, -1),
+      history: formattedHistory,
     });
 
     const result = await chat.sendMessage({ message: userQuery });
@@ -208,8 +206,9 @@ CRITICAL REALLOCATION RULES:
       };
     }
 
-    let replyText = parsed.replyText || "I've processed your budget query.";
-    replyText = replyText.replace(/```json[\s\S]*?```/g, "").trim();
+    const replyText = (parsed.replyText || "I've processed your budget query.")
+      .replace(/```json[\s\S]*?```/g, "")
+      .trim();
 
     const isReallocation =
       parsed.actionType === "reallocation" &&
@@ -222,8 +221,8 @@ CRITICAL REALLOCATION RULES:
       actionType: isReallocation ? "reallocation" : "none",
       transferDetails: isReallocation
         ? {
-            sourceCategory: parsed.transferDetails.sourceCategory,
-            destCategory: parsed.transferDetails.destCategory,
+            sourceCategory: parsed.transferDetails.sourceCategory.trim(),
+            destCategory: parsed.transferDetails.destCategory.trim(),
             amount: Number(parsed.transferDetails.amount),
           }
         : undefined,
