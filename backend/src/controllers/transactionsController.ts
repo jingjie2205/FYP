@@ -80,6 +80,55 @@ export async function createTransaction (req : Request, res : Response) {
   }
 }
 
+export async function updateTransaction (req : Request, res : Response) {
+    try {
+        const id = String(req.params.id)
+        const { user_id, account_id, category_id, title, amount, type, notes, transaction_date } = req.body
+
+        if (!user_id) {
+            return res.status(400).json({ error: "user_id is required" })
+        }
+
+        const [existing] = await sql`SELECT * FROM transactions WHERE id = ${id}`
+        if (!existing || existing.user_id !== user_id) {
+            return res.status(404).json({ error: "Transaction not found" })
+        }
+
+        if (amount !== undefined && (isNaN(amount) || Number(amount) <= 0)) {
+            return res.status(400).json({ error: "Amount must be a positive number" })
+        }
+        if (type !== undefined && !["income", "expense", "transfer"].includes(type)) {
+            return res.status(400).json({ error: "Invalid transaction type" })
+        }
+        if (title !== undefined && !String(title).trim()) {
+            return res.status(400).json({ error: "Title cannot be empty" })
+        }
+        if (transaction_date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(transaction_date))) {
+            return res.status(400).json({ error: "transaction_date must be YYYY-MM-DD" })
+        }
+
+        // category_id and notes may be explicitly cleared with null; undefined means "leave unchanged"
+        const [updated] = await sql`
+            UPDATE transactions SET
+                title = ${title !== undefined ? String(title).trim() : existing.title},
+                amount = ${amount !== undefined ? Number(amount) : existing.amount},
+                type = ${type ?? existing.type},
+                account_id = ${account_id ?? existing.account_id},
+                category_id = ${category_id !== undefined ? category_id : existing.category_id},
+                notes = ${notes !== undefined ? notes : existing.notes},
+                transaction_date = ${transaction_date ?? existing.transaction_date},
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ${id}
+            RETURNING *, to_char(transaction_date, 'YYYY-MM') AS month_key
+        `
+
+        res.status(200).json(updated)
+    } catch (e) {
+        console.error("Error updating transaction:", e)
+        res.status(500).json({ error: "Internal server error" })
+    }
+}
+
 export async function deleteTransaction (req : Request, res : Response) {
     try {
         const { id } = req.params
