@@ -1,6 +1,19 @@
 import { Request, Response } from "express";
 import { sql } from "../config/db.js";
 
+// Returns "YYYY-MM-DD" for a real calendar date, null for empty input, or undefined when invalid
+// (e.g. "2027-2-30"), so a bad value is rejected here instead of failing inside Postgres.
+function normalizeDeadline(value: unknown): string | null | undefined {
+    if (value === undefined || value === null || value === "") return null;
+    const text = String(value).trim().slice(0, 10);
+    const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return undefined;
+    const [y, m, d] = [Number(match[1]), Number(match[2]), Number(match[3])];
+    const check = new Date(Date.UTC(y, m - 1, d));
+    if (check.getUTCFullYear() !== y || check.getUTCMonth() !== m - 1 || check.getUTCDate() !== d) return undefined;
+    return text;
+}
+
 // GET all savings plans for a specific user
 export async function getSavingsPlans(req: Request, res: Response) {
     try {
@@ -39,9 +52,14 @@ export async function createSavingsPlan(req: Request, res: Response) {
             return res.status(400).json({ error: "Missing required fields - name and target_amount" });
         }
 
+        const cleanDeadline = normalizeDeadline(deadline);
+        if (cleanDeadline === undefined) {
+            return res.status(400).json({ error: "deadline must be a valid date (YYYY-MM-DD)" });
+        }
+
         const [newPlan] = await sql`
             INSERT INTO savings_plans (user_id, name, target_amount, saved_amount, deadline)
-            VALUES (${userId}, ${name}, ${target_amount || 0}, 0, ${deadline || null})
+            VALUES (${userId}, ${name}, ${target_amount || 0}, 0, ${cleanDeadline})
             RETURNING *;
         `;
 
@@ -59,12 +77,18 @@ export async function updateSavingsPlan(req: Request, res: Response) {
         // saved_amount is not editable here; it only changes via /contribute and /withdraw (ledger-backed)
         const { name, target_amount, deadline } = req.body;
 
+        // null/empty = leave the existing deadline unchanged (COALESCE below)
+        const cleanDeadline = normalizeDeadline(deadline);
+        if (cleanDeadline === undefined) {
+            return res.status(400).json({ error: "deadline must be a valid date (YYYY-MM-DD)" });
+        }
+
         const [updatedPlan] = await sql`
             UPDATE savings_plans
             SET 
                 name = COALESCE(${name}, name),
                 target_amount = COALESCE(${target_amount}, target_amount),
-                deadline = COALESCE(${deadline}, deadline)
+                deadline = COALESCE(${cleanDeadline}, deadline)
             WHERE id = ${id}
             RETURNING *;
         `;
