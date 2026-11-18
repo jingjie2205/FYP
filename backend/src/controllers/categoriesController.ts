@@ -1,5 +1,23 @@
 import { sql } from "../config/db.js"
 import { Request, Response } from "express";
+import { addMonths, getActiveMonth, parseMonth, setMonthAssigned } from "../services/budgetService.js";
+
+// Returns one category shaped for a given month:
+// target_amount = amount assigned for that month, rollover = leftover carried in, default_amount = monthly default
+async function getCategoryForMonth(categoryId: string, month: string) {
+  const [row] = await sql`
+    SELECT
+      c.id, c.user_id, c.group_id, c.name, c.current_amount, c.created_at,
+      c.target_amount AS default_amount,
+      COALESCE(b.assigned, 0) AS target_amount,
+      COALESCE(b.rollover, 0) AS rollover,
+      to_char(${month}::date, 'YYYY-MM') AS month
+    FROM categories c
+    LEFT JOIN category_budgets b ON b.category_id = c.id AND b.month = ${month}::date
+    WHERE c.id = ${categoryId}
+  `;
+  return row;
+}
 
 async function findUserCategory(userId: string, inputName: string) {
   const cleanInput = inputName.trim();
@@ -30,12 +48,37 @@ async function findUserCategory(userId: string, inputName: string) {
 
 export async function getCategories(req : Request, res : Response) {
     try {
-        const { userId } = req.params
+        const userId = String(req.params.userId)
+        const month = parseMonth(req.query.month)
 
+        // Without ?month= keep the original behaviour (used by chat / other callers)
+        if (!month) {
+            const categories = await sql`
+                SELECT * FROM categories
+                WHERE user_id = ${ userId }
+                ORDER BY created_at DESC
+            `
+            return res.status(200).json(categories)
+        }
+
+        const nextMonth = addMonths(month, 1)
+
+        // Month view: assigned + rollover come from category_budgets.
+        // Categories created after that month (and with no budget row) are hidden.
         const categories = await sql`
-            SELECT * FROM categories
-            WHERE user_id = ${ userId }
-            ORDER BY created_at DESC
+            SELECT
+                c.id, c.user_id, c.group_id, c.name, c.current_amount, c.created_at,
+                c.target_amount AS default_amount,
+                COALESCE(b.assigned, 0) AS target_amount,
+                COALESCE(b.rollover, 0) AS rollover,
+                (b.id IS NOT NULL) AS has_budget,
+                to_char(${month}::date, 'YYYY-MM') AS month
+            FROM categories c
+            LEFT JOIN category_budgets b
+                ON b.category_id = c.id AND b.month = ${month}::date
+            WHERE c.user_id = ${ userId }
+              AND (b.id IS NOT NULL OR c.created_at < ${nextMonth}::date)
+            ORDER BY c.created_at DESC
         `
 
         res.status(200).json(categories)
@@ -47,7 +90,7 @@ export async function getCategories(req : Request, res : Response) {
 
 export async function createCategory (req : Request, res : Response) {
     try {
-        const { user_id, group_id, name, target_amount } = req.body;
+        const { user_id, group_id, name, target_amount, month: monthInput } = req.body;
 
         if (!user_id || !group_id || !name) {
             return res.status(400).json({ error: "Missing required fields - user_id, group_id, and name" });
@@ -61,8 +104,11 @@ export async function createCategory (req : Request, res : Response) {
             RETURNING *
         `;
 
-        console.log(category);
-        res.status(201).json(category);
+        // Seed the budget row for the month being viewed (or the user's active month)
+        const month = parseMonth(monthInput) || await getActiveMonth(user_id);
+        await setMonthAssigned(user_id, category.id, month, assignedAmount);
+
+        res.status(201).json(await getCategoryForMonth(category.id, month));
     } catch (e) {
         console.error("Error creating category:", e);
         res.status(500).json({ error: "Internal server error" });
@@ -92,20 +138,26 @@ export async function deleteCategory(req : Request, res : Response) {
 export async function updateCategory(req: Request, res: Response) {
     try {
         const { id } = req.params;
-        const { group_id, name, target_amount, current_amount } = req.body;
+        const categoryId = String(id);
+        // month: which month's assigned amount to change (defaults to the user's active month)
+        // apply_to_default: false = one-off change for this month only (e.g. covering overspending)
+        const { group_id, name, target_amount, current_amount, month: monthInput, apply_to_default } = req.body;
 
-        if (!id) {
+        if (!categoryId) {
             return res.status(400).json({ error: "Category ID is required" });
         }
+
+        const hasTarget = target_amount !== undefined && target_amount !== null;
+        const newDefault = hasTarget && apply_to_default !== false ? Number(target_amount) : null;
 
         const [updatedCategory] = await sql`
             UPDATE categories
             SET 
-                group_id = COALESCE(${group_id}, group_id),
-                name = COALESCE(${name}, name),
-                target_amount = COALESCE(${target_amount}, target_amount),
-                current_amount = COALESCE(${current_amount}, current_amount)
-            WHERE id = ${id}
+                group_id = COALESCE(${group_id ?? null}, group_id),
+                name = COALESCE(${name ?? null}, name),
+                target_amount = COALESCE(${newDefault}, target_amount),
+                current_amount = COALESCE(${current_amount ?? null}, current_amount)
+            WHERE id = ${categoryId}
             RETURNING *;
         `;
 
@@ -113,7 +165,12 @@ export async function updateCategory(req: Request, res: Response) {
             return res.status(404).json({ error: "Category not found" });
         }
 
-        res.status(200).json(updatedCategory);
+        const month = parseMonth(monthInput) || await getActiveMonth(updatedCategory.user_id);
+        if (hasTarget) {
+            await setMonthAssigned(updatedCategory.user_id, categoryId, month, Number(target_amount));
+        }
+
+        res.status(200).json(await getCategoryForMonth(categoryId, month));
     } catch (e) {
         console.error("Error updating category:", e);
         res.status(500).json({ error: "Internal server error" });
@@ -125,7 +182,7 @@ export async function reallocateBudget(req: Request, res: Response) {
     const userId = Array.isArray(req.body.userId)
       ? req.body.userId[0]
       : req.body.userId;
-    const { sourceName, destName, amount } = req.body;
+    const { sourceName, destName, amount, month: monthInput } = req.body;
 
     // Input validation
     if (!userId || !sourceName || !destName || amount === undefined) {
@@ -163,8 +220,13 @@ export async function reallocateBudget(req: Request, res: Response) {
       });
     }
 
-    // Validate against total allocated budget (target_amount)
-    const sourceAllocated = Number(sourceBudget.target_amount ?? 0);
+    // Reallocation only affects the active month's envelopes
+    const month = parseMonth(monthInput) || await getActiveMonth(userId);
+    const sourceMonth = await getCategoryForMonth(sourceBudget.id, month);
+    const destMonth = await getCategoryForMonth(destBudget.id, month);
+
+    // Validate against the source's allocated budget for this month
+    const sourceAllocated = Number(sourceMonth?.target_amount ?? 0);
 
     if (transferAmount > sourceAllocated) {
       return res.status(400).json({
@@ -176,20 +238,12 @@ export async function reallocateBudget(req: Request, res: Response) {
       });
     }
 
-    // Update target_amount on both categories
-    const [updatedSource] = await sql`
-      UPDATE categories 
-      SET target_amount = target_amount - ${transferAmount}
-      WHERE id = ${sourceBudget.id}
-      RETURNING *
-    `;
+    // Move the assigned amount between the two envelopes for this month only
+    await setMonthAssigned(userId, sourceBudget.id, month, -transferAmount, "delta");
+    await setMonthAssigned(userId, destBudget.id, month, transferAmount, "delta");
 
-    const [updatedDest] = await sql`
-      UPDATE categories 
-      SET target_amount = target_amount + ${transferAmount}
-      WHERE id = ${destBudget.id}
-      RETURNING *
-    `;
+    const updatedSource = await getCategoryForMonth(sourceBudget.id, month);
+    const updatedDest = await getCategoryForMonth(destBudget.id, month);
 
     return res.status(200).json({
       message: "Budget successfully reallocated",
@@ -199,8 +253,9 @@ export async function reallocateBudget(req: Request, res: Response) {
         amount: transferAmount,
         previousSourceAllocated: sourceAllocated,
         newSourceBalance: Number(updatedSource.target_amount),
-        previousDestAllocated: Number(destBudget.target_amount),
+        previousDestAllocated: Number(destMonth?.target_amount ?? 0),
         newDestBalance: Number(updatedDest.target_amount),
+        month: updatedSource.month,
       },
     });
   } catch (e: any) {

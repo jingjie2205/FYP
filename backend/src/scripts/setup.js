@@ -117,6 +117,25 @@ async function initializeDatabase() {
         `;
         console.log("Budgets table is ready.");
 
+        // 7. CATEGORY_BUDGETS TABLE (monthly envelopes + rollover)
+        //    See migrations/001_monthly_budgets.sql
+        await sql`
+            CREATE TABLE IF NOT EXISTS category_budgets (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                category_id UUID NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+                month DATE NOT NULL,
+                assigned DECIMAL(12, 2) NOT NULL DEFAULT 0,
+                rollover DECIMAL(12, 2) NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT category_budgets_month_is_first CHECK (EXTRACT(DAY FROM month) = 1),
+                UNIQUE (category_id, month)
+            );
+        `;
+        await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_rollover_month DATE`;
+        console.log("Category budgets table is ready.");
+
         console.log("Database initialization complete!");
         process.exit(0);
     } catch (error) {

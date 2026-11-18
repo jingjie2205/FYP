@@ -1,16 +1,29 @@
 import { sql } from "../config/db.js"
 import express, { Request, Response } from "express";
 import { createTransactionRecord } from "../services/transactionService.js"
+import { addMonths, parseMonth } from "../services/budgetService.js"
 
 export async function getTransactionsByUserId(req : Request, res : Response) {
     try {
         const { userId } = req.params
+        const month = parseMonth(req.query.month)
 
-        const transactions = await sql`
-            SELECT * FROM transactions 
-            WHERE user_id = ${ userId } 
-            ORDER BY created_at DESC
-        `
+        // month_key ("YYYY-MM") lets the app group by month without timezone issues on DATE parsing
+        const transactions = month
+            ? await sql`
+                SELECT *, to_char(transaction_date, 'YYYY-MM') AS month_key
+                FROM transactions 
+                WHERE user_id = ${ userId }
+                  AND transaction_date >= ${month}::date
+                  AND transaction_date < ${addMonths(month, 1)}::date
+                ORDER BY transaction_date DESC, created_at DESC
+            `
+            : await sql`
+                SELECT *, to_char(transaction_date, 'YYYY-MM') AS month_key
+                FROM transactions 
+                WHERE user_id = ${ userId } 
+                ORDER BY transaction_date DESC, created_at DESC
+            `
 
         res.status(200).json(transactions)
     } catch (e) {
