@@ -18,7 +18,15 @@ export async function createUser(req : Request, res : Response) {
 
         console.log(user);
         res.status(201).json(user[0]);
-    } catch (e) {
+    } catch (e: any) {
+        // users.email is UNIQUE: happens when the same email was used by an older (e.g. deleted) Clerk user
+        if (e?.code === "23505") {
+            console.error("Error creating user - email already linked to another user id:", e.detail);
+            return res.status(409).json({
+                error: "This email is already linked to another account in the database",
+                details: e.detail,
+            });
+        }
         console.error("Error creating user:", e);
         res.status(500).json({ error: "Internal server error" });
     }
