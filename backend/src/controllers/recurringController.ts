@@ -74,6 +74,17 @@ export async function createRecurringTransaction(req: Request, res: Response) {
             return res.status(400).json({ error: "next_run_date must be YYYY-MM-DD" });
         }
 
+        // Recurring expenses must be charged to one of the user's envelopes (income has none)
+        if (type === "expense") {
+            if (!category_id) {
+                return res.status(400).json({ error: "An envelope is required for recurring expenses" });
+            }
+            const [envelope] = await sql`SELECT id FROM categories WHERE id = ${category_id} AND user_id = ${user_id}`;
+            if (!envelope) {
+                return res.status(400).json({ error: "Envelope not found for this user" });
+            }
+        }
+
         // The account must belong to this user; posted transactions will be written to it
         const [account] = await sql`SELECT id FROM accounts WHERE id = ${account_id} AND user_id = ${user_id}`;
         if (!account) {
@@ -89,7 +100,7 @@ export async function createRecurringTransaction(req: Request, res: Response) {
             VALUES (
                 ${user_id}, 
                 ${account_id}, 
-                ${category_id || null}, 
+                ${type === "expense" ? category_id : null}, 
                 ${title}, 
                 ${amount}, 
                 ${type}, 
