@@ -3,10 +3,14 @@ import {
   getRecurringTransactions, 
   createRecurringTransaction, 
   updateRecurringTransaction, 
-  deleteRecurringTransaction 
-} from '../controllers/recurringController'; // Adjust path as needed
+  deleteRecurringTransaction,
+  processRecurringTransactions
+} from '../controllers/recurringController.js';
 
 const router = Router();
+
+// POST post every due occurrence as a real transaction (called by the app with the phone's date)
+router.post('/process/:userId', processRecurringTransactions);
 
 // GET all recurring rules for user
 router.get('/:userId', getRecurringTransactions);
