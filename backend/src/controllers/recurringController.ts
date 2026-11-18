@@ -31,7 +31,8 @@ export async function getRecurringTransactions(req: Request, res: Response) {
         const { userId } = req.params;
 
         const recurringTransactions = await sql`
-            SELECT *, to_char(next_run_date, 'YYYY-MM-DD') AS next_date
+            SELECT *, to_char(next_run_date, 'YYYY-MM-DD') AS next_date,
+                   to_char(COALESCE(start_date, next_run_date), 'YYYY-MM-DD') AS start
             FROM recurring_transactions
             WHERE user_id = ${userId}
             ORDER BY created_at DESC
