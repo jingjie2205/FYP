@@ -121,48 +121,94 @@ export async function createRecurringTransaction(req: Request, res: Response) {
 
 export async function updateRecurringTransaction(req: Request, res: Response) {
     try {
-        const { id } = req.params;
-        const { is_active, title, amount, frequency, category_id, account_id, date } = req.body;
+        const id = String(req.params.id);
+        const { user_id, is_active, title, amount, frequency, category_id, account_id, next_run_date, date } = req.body;
 
         if (date !== undefined && !isValidDateString(date)) {
             return res.status(400).json({ error: "date must be YYYY-MM-DD" });
         }
+        if (next_run_date !== undefined && next_run_date !== null && !isValidDateString(next_run_date)) {
+            return res.status(400).json({ error: "next_run_date must be YYYY-MM-DD" });
+        }
 
-        // Resuming a paused rule: skip the periods missed while paused instead of posting them all
-        let resumeDate: string | null = null;
-        if (is_active === true) {
-            const [existing] = await sql`
-                SELECT is_active, frequency,
-                       to_char(next_run_date, 'YYYY-MM-DD') AS next_date,
-                       to_char(start_date, 'YYYY-MM-DD') AS start
-                FROM recurring_transactions WHERE id = ${id}
-            `;
-            const freq = normalizeFrequency(existing?.frequency);
-            if (existing && !existing.is_active && freq) {
-                resumeDate = firstOccurrenceOnOrAfter(existing.next_date, freq, existing.start || existing.next_date, date ?? serverToday());
+        const [existing] = await sql`
+            SELECT user_id, type, is_active, frequency,
+                   to_char(next_run_date, 'YYYY-MM-DD') AS next_date,
+                   to_char(COALESCE(start_date, next_run_date), 'YYYY-MM-DD') AS start
+            FROM recurring_transactions WHERE id = ${id}
+        `;
+        if (!existing || (user_id && existing.user_id !== user_id)) {
+            return res.status(404).json({ error: "Recurring transaction not found" });
+        }
+
+        if (title !== undefined && !String(title).trim()) {
+            return res.status(400).json({ error: "Title cannot be empty" });
+        }
+        if (amount !== undefined && (isNaN(amount) || Number(amount) <= 0)) {
+            return res.status(400).json({ error: "Amount must be a positive number" });
+        }
+
+        let newFrequency: string | null = null;
+        if (frequency !== undefined) {
+            const f = normalizeFrequency(frequency);
+            if (!f) {
+                return res.status(400).json({ error: "frequency must be Weekly, Monthly or Yearly" });
+            }
+            newFrequency = f.charAt(0).toUpperCase() + f.slice(1);
+        }
+
+        if (account_id !== undefined && account_id !== null) {
+            const [account] = await sql`SELECT id FROM accounts WHERE id = ${account_id} AND user_id = ${existing.user_id}`;
+            if (!account) {
+                return res.status(400).json({ error: "Account not found for this user" });
             }
         }
 
-        const result = await sql`
-            UPDATE recurring_transactions 
-            SET 
-                is_active = COALESCE(${is_active}, is_active),
-                title = COALESCE(${title}, title),
-                amount = COALESCE(${amount}, amount),
-                frequency = COALESCE(${frequency}, frequency),
-                category_id = COALESCE(${category_id}, category_id),
-                account_id = COALESCE(${account_id}, account_id),
-                next_run_date = COALESCE(${resumeDate}::date, next_run_date),
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ${id} 
-            RETURNING *
-        `;
-
-        if (result.length === 0) {
-            return res.status(404).json({ message: "Recurring transaction not found!" });
+        // Expenses always keep an envelope; income never has one
+        let newCategory: string | null = null;
+        if (existing.type === "expense") {
+            if (category_id === null) {
+                return res.status(400).json({ error: "An envelope is required for recurring expenses" });
+            }
+            if (category_id !== undefined) {
+                const [envelope] = await sql`SELECT id FROM categories WHERE id = ${category_id} AND user_id = ${existing.user_id}`;
+                if (!envelope) {
+                    return res.status(400).json({ error: "Envelope not found for this user" });
+                }
+                newCategory = category_id;
+            }
         }
 
-        res.status(200).json(result[0]);
+        // Resuming a paused rule: skip the periods missed while paused instead of posting them all
+        let resumeDate: string | null = null;
+        const effectiveFrequency = normalizeFrequency(newFrequency ?? existing.frequency);
+        if (is_active === true && !existing.is_active && effectiveFrequency) {
+            resumeDate = firstOccurrenceOnOrAfter(existing.next_date, effectiveFrequency, existing.start || existing.next_date, date ?? serverToday());
+        }
+
+        // A new next date re-anchors the schedule (also becomes the day used for monthly/yearly repeats)
+        const newNext: string | null = next_run_date ?? null;
+        const effectiveNext = newNext ?? resumeDate;
+
+        const [updated] = await sql`
+            UPDATE recurring_transactions
+            SET
+                is_active = COALESCE(${is_active ?? null}, is_active),
+                title = COALESCE(${title !== undefined ? String(title).trim() : null}, title),
+                amount = COALESCE(${amount ?? null}, amount),
+                frequency = COALESCE(${newFrequency}, frequency),
+                category_id = COALESCE(${newCategory}, category_id),
+                account_id = COALESCE(${account_id ?? null}, account_id),
+                next_run_date = COALESCE(${effectiveNext}::date, next_run_date),
+                start_date = COALESCE(${newNext}::date, start_date),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ${id}
+            RETURNING *,
+                to_char(next_run_date, 'YYYY-MM-DD') AS next_date,
+                to_char(COALESCE(start_date, next_run_date), 'YYYY-MM-DD') AS start
+        `;
+
+        res.status(200).json(updated);
     } catch (e) {
         console.error("Error updating recurring transaction:", e);
         res.status(500).json({ error: "Internal server error" });
