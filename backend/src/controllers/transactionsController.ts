@@ -3,6 +3,9 @@ import express, { Request, Response } from "express";
 import { createTransactionRecord } from "../services/transactionService.js"
 import { addMonths, parseMonth } from "../services/budgetService.js"
 
+// Savings goal movements live in this table but are owned by the savings endpoints
+const SAVINGS_TYPES = ["savings", "savings_withdrawal"]
+
 export async function getTransactionsByUserId(req : Request, res : Response) {
     try {
         const { userId } = req.params
@@ -93,6 +96,9 @@ export async function updateTransaction (req : Request, res : Response) {
         if (!existing || existing.user_id !== user_id) {
             return res.status(404).json({ error: "Transaction not found" })
         }
+        if (SAVINGS_TYPES.includes(existing.type)) {
+            return res.status(409).json({ error: "Savings transfers can't be edited. Use the savings goal instead." })
+        }
 
         if (amount !== undefined && (isNaN(amount) || Number(amount) <= 0)) {
             return res.status(400).json({ error: "Amount must be a positive number" })
@@ -138,6 +144,11 @@ export async function deleteTransaction (req : Request, res : Response) {
             return res.status(400).json({ message:"Invalid transaction ID" })
         }
 
+        const [target] = await sql`SELECT type FROM transactions WHERE id = ${ id }`
+        if (target && SAVINGS_TYPES.includes(target.type)) {
+            return res.status(409).json({ message: "Savings transfers can't be deleted. Use the savings goal instead." })
+        }
+
         const result = await sql`
             DELETE FROM transactions
             WHERE id = ${ id } RETURNING *
@@ -158,6 +169,8 @@ export async function getSummary (req : Request, res : Response) {
     try {
         const { userId } = req.params
 
+        // Only 'income' and 'expense' affect balances/totals. 'savings' and 'savings_withdrawal' rows
+        // (money moved to/from a goal) are deliberately excluded everywhere below.
         // FIX 3: Calculate balance by dynamically checking the type
         const balanceResult = await sql `
             SELECT COALESCE(SUM(

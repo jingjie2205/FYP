@@ -1,5 +1,5 @@
 import express from "express";
-import { getSavingsPlans, createSavingsPlan, updateSavingsPlan, deleteSavingsPlan } from "../controllers/savingsController.js";
+import { getSavingsPlans, createSavingsPlan, updateSavingsPlan, deleteSavingsPlan, contributeToSavings, withdrawFromSavings } from "../controllers/savingsController.js";
 
 const router = express.Router();
 
@@ -12,7 +12,12 @@ router.post("/:userId", createSavingsPlan);
 // PUT update savings plan by plan id
 router.put("/plan/:id", updateSavingsPlan);
 
+// Move money between Unallocated Cash and a goal (recorded in transactions)
+router.post("/:id/contribute", contributeToSavings);
+router.post("/:id/withdraw", withdrawFromSavings);
+
 // DELETE savings plan by plan id
 router.delete("/plan/:id", deleteSavingsPlan);
+router.delete("/:id", deleteSavingsPlan);
 
 export default router;
