@@ -1,4 +1,4 @@
-import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import { ChatContext } from "./chatContextService.js";
 import { isValidDateString, normalizeFrequency } from "./recurringService.js";
@@ -395,8 +395,7 @@ export function needsFinancialContext(userQuery: string, history: Array<{ role: 
   return previous.some((h) => FINANCE_WORDS.test(h.content || ""));
 }
 
-const PRIMARY_CHAT_MODEL = "gemini-4-hydrogen";
-const FALLBACK_CHAT_MODEL = "gemini-3.5-flash-lite";
+const CHAT_MODEL = "gemini-3.5-flash-lite";
 
 /**
  * Fallback for unexpected non-pure-JSON output: returns the last top-level {...} block that parses,
@@ -550,28 +549,26 @@ In the reply, briefly explain the proposal and say the user can review and confi
       required: ["reply"],
     };
 
-    // Both models are forced to return one JSON object that matches responseSchema.
-    // Thinking is controlled with thinkingLevel only (thinkingBudget is rejected by Gemini 4 models).
-    const askModel = (model: string, withThinking: boolean) =>
+    // The model is forced to return one JSON object that matches responseSchema
+    const askModel = () =>
       ai.chats
         .create({
-          model,
+          model: CHAT_MODEL,
           config: {
             systemInstruction,
             temperature: 0.1,
             responseMimeType: "application/json",
             responseSchema,
-            ...(withThinking ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
           },
           history: formattedHistory,
         })
         .sendMessage({ message: userQuery });
 
-    // Demand spikes are usually brief: retry the primary a couple of times, then fall back to the lighter model
-    const callWithRetry = async (model: string, withThinking: boolean) => {
+    // Demand spikes are usually brief: retry a couple of times before giving up
+    const callWithRetry = async () => {
       for (let attempt = 0; ; attempt++) {
         try {
-          return await askModel(model, withThinking);
+          return await askModel();
         } catch (err) {
           if (!isModelOverloadedError(err) || attempt >= OVERLOAD_RETRY_DELAYS_MS.length) throw err;
           await new Promise((resolve) => setTimeout(resolve, OVERLOAD_RETRY_DELAYS_MS[attempt]));
@@ -579,13 +576,7 @@ In the reply, briefly explain the proposal and say the user can review and confi
       }
     };
 
-    let result;
-    try {
-      result = await callWithRetry(PRIMARY_CHAT_MODEL, true);
-    } catch (primaryErr) {
-      console.warn("[chat] primary model failed, using fallback:", (primaryErr as any)?.message ?? primaryErr);
-      result = await callWithRetry(FALLBACK_CHAT_MODEL, false);
-    }
+    const result = await callWithRetry();
     const rawText = result.text || "{}";
 
     let parsed: any;
