@@ -9,7 +9,8 @@ const ai = new GoogleGenAI({ apiKey: apiKey || "" });
 export interface ReceiptAccountContext {
   id: string;
   name: string;
-  type: string;
+  /** The accounts table has no type column today; kept optional for future use */
+  type?: string;
 }
 
 export interface ReceiptEnvelopeContext {

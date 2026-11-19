@@ -26,7 +26,7 @@ router.post("/scan", async (req, res) => {
 
     // Read-only context, scoped to this user
     const accountRows = await sql`
-      SELECT id, name, type FROM accounts WHERE user_id = ${user_id}
+      SELECT id, name FROM accounts WHERE user_id = ${user_id}
     `;
 
     const envelopeRows = await sql`
@@ -54,7 +54,6 @@ router.post("/scan", async (req, res) => {
     const accounts: ReceiptAccountContext[] = accountRows.map((a: any) => ({
       id: String(a.id),
       name: String(a.name),
-      type: String(a.type ?? ""),
     }));
     const envelopes: ReceiptEnvelopeContext[] = envelopeRows.map((e: any) => ({
       id: String(e.id),
