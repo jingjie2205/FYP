@@ -29,7 +29,7 @@ export default function PlanScreen() {
   const { user } = useUser();
   const userId = user?.id;
   const { selectedMonth, isCurrentMonth, rolloverReady, rolloverVersion } = useMonth();
-  // Past months are view-only: editing them would invalidate the rollover already carried into later months
+  // Past months are view-only
   const readOnly = !isCurrentMonth;
 
   const [activeTab, setActiveTab] = useState<'spending' | 'savings'>('spending');
@@ -40,6 +40,9 @@ export default function PlanScreen() {
   const { accounts = [], fetchAccounts } = useAccounts(userId);
   const { transactions = [], loadData: fetchTransactions } = useTransactions(userId);
   const { categories, groupedCategories, isLoading: categoriesLoading, fetchCategories, createCategory, updateCategory, deleteCategory, createGroup, updateGroup, deleteGroup } = useCategories(userId, selectedMonth);
+  // Previous month's envelopes (only used to show how much was returned to the pool)
+  const prevMonth = useMemo(() => shiftMonthKey(selectedMonth, -1), [selectedMonth]);
+  const { categories: prevCategories, fetchCategories: fetchPrevCategories } = useCategories(userId, prevMonth);
   const { savingsPlans, isLoading: savingsLoading, fetchSavings, createSavingsPlan, updateSavingsPlan, deleteSavingsPlan, contributeToPlan, withdrawFromPlan } = useSavings(userId);
 
   // ==========================================
@@ -93,25 +96,78 @@ export default function PlanScreen() {
     return map;
   }, [transactions, selectedMonth]);
 
-  // Available in an envelope = carried-over leftover + assigned this month - spent this month
+  // Available in an envelope = assigned this month - spent this month (nothing carries over between months)
   const getAvailable = useCallback(
-    (cat: Category) => Number(cat.rollover || 0) + Number(cat.target_amount || 0) - (categorySpendingMap[cat.id] || 0),
+    (cat: Category) => Number(cat.target_amount || 0) - (categorySpendingMap[cat.id] || 0),
     [categorySpendingMap]
   );
 
   // Summary of the selected month (shown instead of the pool card for past months)
   const monthSummary = useMemo(() => {
     const assigned = categories.reduce((sum, c) => sum + Number(c.target_amount || 0), 0);
-    const rolledIn = categories.reduce((sum, c) => sum + Number(c.rollover || 0), 0);
     const spent = categories.reduce((sum, c) => sum + (categorySpendingMap[c.id] || 0), 0);
     const rolledOut = categories.reduce((sum, c) => sum + Math.max(0, getAvailable(c)), 0);
-    return { assigned, rolledIn, spent, rolledOut };
+    return { assigned, spent, rolledOut };
   }, [categories, categorySpendingMap, getAvailable]);
 
   // Pool Calculations using the LIVE ledger balance
   const totalCategoryAvailable = categories.reduce((sum, cat) => sum + Math.max(0, getAvailable(cat)), 0);
   const totalAllocatedSavings = savingsPlans.reduce((sum, plan) => sum + Number(plan.saved_amount || 0), 0);
   const availablePool = liveTotalAccountsBalance - (totalCategoryAvailable + totalAllocatedSavings);
+
+  // ==========================================
+  // POOL BREAKDOWN (waterfall that reconciles to availablePool)
+  // pool = prior + lastMonthUnspent + income - budgets - (overspend + uncategorized) - netSaved + laterNet
+  // "prior" is the remainder, so the displayed rows always add up to availablePool to the cent.
+  // ==========================================
+  const poolBreakdown = useMemo(() => {
+    const cents = (n: number) => Math.round(n * 100) / 100;
+    const tx = transactions as any[];
+
+    let income = 0, expenseTotal = 0, netSaved = 0, laterNet = 0;
+    const prevSpent: Record<string, number> = {};
+    tx.forEach((t) => {
+      const key = getTransactionMonthKey(t);
+      const amt = Number(t.amount || 0);
+      if (key === selectedMonth) {
+        if (t.type === 'income') income += amt;
+        else if (t.type === 'expense') expenseTotal += amt;
+        else if (t.type === 'savings') netSaved += amt;
+        else if (t.type === 'savings_withdrawal') netSaved -= amt;
+      } else if (key === prevMonth) {
+        if (t.type === 'expense' && t.category_id) prevSpent[t.category_id] = (prevSpent[t.category_id] || 0) + amt;
+      }
+      if (key > selectedMonth) {
+        if (t.type === 'income') laterNet += amt;
+        else if (t.type === 'expense') laterNet -= amt;
+      }
+    });
+
+    const budgets = categories.reduce((sum, c) => sum + Number(c.target_amount || 0), 0);
+    const listedSpent = categories.reduce((sum, c) => sum + (categorySpendingMap[c.id] || 0), 0);
+    const overspent = categories.reduce(
+      (sum, c) => sum + Math.max(0, (categorySpendingMap[c.id] || 0) - Number(c.target_amount || 0)), 0);
+    const uncategorized = Math.max(0, expenseTotal - listedSpent);
+
+    let lastUnspent = 0, lastOverspent = 0;
+    prevCategories.forEach((c) => {
+      const left = Number(c.target_amount || 0) - (prevSpent[c.id] || 0);
+      if (left > 0) lastUnspent += left; else lastOverspent += -left;
+    });
+
+    const rows = {
+      lastUnspent: cents(lastUnspent),
+      lastOverspent: cents(lastOverspent),
+      income: cents(income),
+      budgets: cents(budgets),
+      netSaved: cents(netSaved),
+      overspending: cents(overspent + uncategorized),
+      laterNet: cents(laterNet),
+    };
+    const total = cents(availablePool);
+    const prior = cents(total - (rows.lastUnspent + rows.income - rows.budgets - rows.overspending - rows.netSaved + rows.laterNet));
+    return { ...rows, prior, total };
+  }, [transactions, categories, prevCategories, categorySpendingMap, selectedMonth, prevMonth, availablePool]);
 
   // Modal Visibility States
   const [groupModalVisible, setGroupModalVisible] = useState(false);
@@ -136,8 +192,8 @@ export default function PlanScreen() {
   const eligibleDonors = useMemo(() => categories.filter(cat => cat.id !== overspentCategory?.id && getAvailable(cat) >= shortfallAmount), [categories, getAvailable, shortfallAmount, overspentCategory]);
 
   const loadAllData = useCallback(async () => {
-    await Promise.all([fetchAccounts(), fetchCategories(), fetchSavings(), fetchTransactions()]);
-  }, [fetchAccounts, fetchCategories, fetchSavings, fetchTransactions]);
+    await Promise.all([fetchAccounts(), fetchCategories(), fetchPrevCategories(), fetchSavings(), fetchTransactions()]);
+  }, [fetchAccounts, fetchCategories, fetchPrevCategories, fetchSavings, fetchTransactions]);
 
   // Wait for the monthly rollover so the current month's envelopes exist before fetching
   useEffect(() => { if (userId && rolloverReady) loadAllData(); }, [userId, rolloverReady, rolloverVersion, loadAllData]);
@@ -165,8 +221,7 @@ export default function PlanScreen() {
     if (!name.trim()) return Alert.alert('Error', 'Please enter a category name.');
     if (editingCategory) {
       const spent = categorySpendingMap[editingCategory.id] || 0;
-      const rollover = Number(editingCategory.rollover || 0);
-      await updateCategory(editingCategory.id, { name: name.trim(), target_amount: targetAmount, current_amount: Math.max(0, rollover + targetAmount - spent) });
+      await updateCategory(editingCategory.id, { name: name.trim(), target_amount: targetAmount, current_amount: Math.max(0, targetAmount - spent) });
     } else if (activeGroupId) {
       await createCategory({ name: name.trim(), target_amount: targetAmount, group_id: activeGroupId });
     }
@@ -222,17 +277,12 @@ export default function PlanScreen() {
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <MonthSelector style={styles.monthSelector} />
 
-      {isCurrentMonth ? (
-        /* Pass the live mathematical balance instead of the static database pull */
-        <PoolCard availablePool={availablePool} totalAccountsBalance={liveTotalAccountsBalance} />
-      ) : (
+      {/* Live ledger balance minus reserved envelope/goal funds, with a waterfall breakdown */}
+      <PoolCard availablePool={availablePool} totalAccountsBalance={liveTotalAccountsBalance} breakdown={poolBreakdown} />
+      {!isCurrentMonth && (
         <View style={styles.summaryCard}>
           <Text style={styles.summaryTitle}>{formatMonthKey(selectedMonth)} summary</Text>
           <View style={styles.summaryRow}>
-            <View style={styles.summaryItem}>
-              <Text style={styles.summaryLabel}>ROLLED IN</Text>
-              <Text style={styles.summaryValue}>${monthSummary.rolledIn.toFixed(2)}</Text>
-            </View>
             <View style={styles.summaryItem}>
               <Text style={styles.summaryLabel}>ASSIGNED</Text>
               <Text style={styles.summaryValue}>${monthSummary.assigned.toFixed(2)}</Text>
@@ -241,9 +291,13 @@ export default function PlanScreen() {
               <Text style={styles.summaryLabel}>SPENT</Text>
               <Text style={[styles.summaryValue, { color: '#FF6B6B' }]}>${monthSummary.spent.toFixed(2)}</Text>
             </View>
+            <View style={styles.summaryItem}>
+              <Text style={styles.summaryLabel}>LEFT OVER</Text>
+              <Text style={[styles.summaryValue, { color: '#00D293' }]}>${monthSummary.rolledOut.toFixed(2)}</Text>
+            </View>
           </View>
           <Text style={styles.summaryFoot}>
-            ${monthSummary.rolledOut.toFixed(2)} left over · carried into {formatMonthKey(shiftMonthKey(selectedMonth, 1), true)}
+            Unspent envelope money returns to the Unallocated pool in {formatMonthKey(shiftMonthKey(selectedMonth, 1), true)}
           </Text>
         </View>
       )}

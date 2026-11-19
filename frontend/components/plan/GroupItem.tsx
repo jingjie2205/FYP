@@ -22,10 +22,10 @@ export default function GroupItem({
 }: Props) {
   
   // Total budget for the month = carried-over leftover + assigned
-  const groupTargetTotal = group.categories.reduce((sum, cat) => sum + Number(cat.rollover || 0) + Number(cat.target_amount || 0), 0);
+  const groupTargetTotal = group.categories.reduce((sum, cat) => sum + Number(cat.target_amount || 0), 0);
   
   const groupAvailableTotal = group.categories.reduce((sum, cat) => {
-    const budget = Number(cat.rollover || 0) + Number(cat.target_amount || 0);
+    const budget = Number(cat.target_amount || 0);
     const spent = spendingMap[cat.id] || 0;
     return sum + (budget - spent);
   }, 0);

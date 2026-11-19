@@ -12,7 +12,7 @@ interface Props {
   availablePool: number;
   shortfallAmount: number;
   categorySpendingMap: Record<string, number>;
-  /** Available = rollover + assigned - spent. Falls back to assigned - spent when not provided. */
+  /** Available = assigned - spent. Falls back to assigned - spent when not provided. */
   getAvailable?: (category: Category) => number;
 }
 
