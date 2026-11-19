@@ -6,18 +6,29 @@ dotenv.config();
 const apiKey = process.env.GEMINI_API_KEY;
 const ai = new GoogleGenAI({ apiKey: apiKey || "" });
 
-export interface ReceiptItem {
+export interface ReceiptAccountContext {
+  id: string;
   name: string;
-  price: number;
-  category?: string;
+  type: string;
 }
 
-export interface ParsedReceipt {
-  title: string;
-  amount: number;
-  date: string;
-  suggestedCategory: string;
-  items: ReceiptItem[];
+export interface ReceiptEnvelopeContext {
+  id: string;
+  name: string;
+  group_name: string | null;
+  allocated: number;
+  spent: number;
+}
+
+export type ReceiptField = "title" | "amount" | "account_id" | "category_id" | "transaction_date";
+
+export interface ReceiptDraft {
+  title: string | null;
+  amount: number | null;
+  account_id: string | null;
+  category_id: string | null;
+  transaction_date: string;
+  uncertain_fields: ReceiptField[];
 }
 
 export interface BudgetEnvelopeContext {
@@ -36,30 +47,46 @@ export interface ChatResponsePayload {
   };
 }
 
-export async function parseReceiptWithGemini(
+const isRealDate = (value: unknown): value is string => {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [y, m, day] = value.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1, day));
+  return d.getUTCFullYear() === y && d.getUTCMonth() === m - 1 && d.getUTCDate() === day;
+};
+
+/**
+ * Reads a receipt image and returns a DRAFT transaction. The model only sees the user's accounts and
+ * envelopes as read-only context, has no tools, and anything it is unsure about is returned as null.
+ * Every returned id is re-validated against the supplied lists before it leaves this function.
+ */
+export async function extractReceiptDraft(
   base64Image: string,
-  availableCategories: string[] = [],
+  context: { accounts: ReceiptAccountContext[]; envelopes: ReceiptEnvelopeContext[]; today: string },
   mimeType: string = "image/jpeg"
-): Promise<ParsedReceipt> {
+): Promise<ReceiptDraft> {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error("GEMINI_API_KEY environment variable is missing on server");
   }
 
-  const categoryContext =
-    availableCategories.length > 0
-      ? `You MUST choose "suggestedCategory" strictly from this user budget envelope list: [${availableCategories.join(
-          ", "
-        )}]. If none fit cleanly, pick the closest match from that list.`
-      : `Suggest a sensible budget envelope category as "suggestedCategory".`;
+  const { accounts, envelopes, today } = context;
 
-  const promptText = `Extract receipt details from this image:
-- "title": Merchant or business name
-- "amount": Grand total paid as a number
-- "date": Date of purchase formatted as YYYY-MM-DD (if missing, use today's date)
-- "suggestedCategory": 
-${categoryContext}
-- "items": Array of line items with "name" (string) and "price" (number).
-`;
+  const systemInstruction = `You extract a draft expense from a receipt image. You have read-only context and no tools.
+Return strictly valid JSON: {"title","amount","account_id","category_id","transaction_date","uncertain_fields"}.
+
+RULES (never guess; use null when unsure):
+- title: merchant name or a concise description of the purchase. null if illegible or unclear.
+- amount: the final total paid, as a number. null if cut off, blurry or ambiguous.
+- account_id: choose ONLY an "id" from the ACCOUNTS list below, and only when the receipt shows an explicit payment cue
+  (e.g. "DBS", "OCBC", "NETS", "PayNow", a card network / last-4 digits, or "CASH") that clearly matches exactly one account. Otherwise null.
+- category_id: choose ONLY an "id" from the ENVELOPES list below, based on the merchant and line items. If ambiguous or low-confidence, null.
+- transaction_date: the receipt date as YYYY-MM-DD. If missing, unreadable or ambiguous use today's date: ${today}.
+- uncertain_fields: names of fields (title, amount, account_id, category_id, transaction_date) that were missing, defaulted or low-confidence.
+Never invent ids. Never output anything but the JSON object.
+
+ACCOUNTS: ${JSON.stringify(accounts)}
+ENVELOPES: ${JSON.stringify(envelopes)}`;
+
+  const nullableString = { type: Type.STRING, nullable: true };
 
   const response = await ai.models.generateContent({
     model: "gemini-3.6-flash",
@@ -67,43 +94,63 @@ ${categoryContext}
       {
         role: "user",
         parts: [
-          { text: promptText },
-          {
-            inlineData: {
-              data: base64Image,
-              mimeType,
-            },
-          },
+          { text: "Extract the draft transaction from this receipt." },
+          { inlineData: { data: base64Image, mimeType } },
         ],
       },
     ],
     config: {
+      systemInstruction,
+      temperature: 0,
       responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          title: { type: Type.STRING },
-          amount: { type: Type.NUMBER },
-          date: { type: Type.STRING },
-          suggestedCategory: { type: Type.STRING },
-          items: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                name: { type: Type.STRING },
-                price: { type: Type.NUMBER },
-              },
-              required: ["name", "price"],
-            },
-          },
+          title: nullableString,
+          amount: { type: Type.NUMBER, nullable: true },
+          account_id: nullableString,
+          category_id: nullableString,
+          transaction_date: nullableString,
+          uncertain_fields: { type: Type.ARRAY, items: { type: Type.STRING } },
         },
-        required: ["title", "amount", "suggestedCategory", "items"],
+        required: ["title", "amount", "account_id", "category_id", "transaction_date", "uncertain_fields"],
       },
     },
   });
 
-  return JSON.parse(response.text || "{}") as ParsedReceipt;
+  let raw: any = {};
+  try {
+    raw = JSON.parse(response.text || "{}");
+  } catch {
+    raw = {};
+  }
+
+  // ---- Post-validation: never trust the model ----
+  const accountIds = new Set(accounts.map((a) => a.id));
+  const envelopeIds = new Set(envelopes.map((e) => e.id));
+
+  const title = typeof raw.title === "string" && raw.title.trim() ? raw.title.trim().slice(0, 255) : null;
+  const amountNum = typeof raw.amount === "number" ? raw.amount : Number(raw.amount);
+  const amount = raw.amount !== null && raw.amount !== undefined && Number.isFinite(amountNum) && amountNum > 0
+    ? Math.round(amountNum * 100) / 100
+    : null;
+  const account_id = typeof raw.account_id === "string" && accountIds.has(raw.account_id) ? raw.account_id : null;
+  const category_id = typeof raw.category_id === "string" && envelopeIds.has(raw.category_id) ? raw.category_id : null;
+  const dateOk = isRealDate(raw.transaction_date);
+  const transaction_date = dateOk ? (raw.transaction_date as string) : today;
+
+  const uncertain = new Set<ReceiptField>();
+  const allowed: ReceiptField[] = ["title", "amount", "account_id", "category_id", "transaction_date"];
+  if (Array.isArray(raw.uncertain_fields)) {
+    for (const f of raw.uncertain_fields) if (allowed.includes(f)) uncertain.add(f);
+  }
+  if (title === null) uncertain.add("title");
+  if (amount === null) uncertain.add("amount");
+  if (account_id === null) uncertain.add("account_id");
+  if (category_id === null) uncertain.add("category_id");
+  if (!dateOk) uncertain.add("transaction_date");
+
+  return { title, amount, account_id, category_id, transaction_date, uncertain_fields: [...uncertain] };
 }
 
 export async function processChatQueryWithGemini(
