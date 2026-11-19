@@ -25,6 +25,8 @@ import { TransactionItem } from '@/components/TransactionItem'
 import NoTransactionsFound from '@/components/NoTransactionsFound'
 import { AccountCarousel, CarouselAccountCard } from '@/components/AccountCarousel'
 import EditTransactionModal from '@/components/EditTransactionModal'
+import AddTransactionModal, { TransactionDraft } from '@/components/AddTransactionModal'
+import ReceiptScannerButton from '@/components/ReceiptScannerButton'
 import MonthSelector from '@/components/MonthSelector'
 import { useMonth } from '@/hooks/useMonth'
 import { formatMonthKey, getTransactionMonthKey } from '@/utils/month'
@@ -38,6 +40,9 @@ export default function Page() {
 
   // CRUD Modal States
   const [editingTransaction, setEditingTransaction] = useState<any | null>(null)
+  const [addModalVisible, setAddModalVisible] = useState(false)
+  const [receiptDraft, setReceiptDraft] = useState<TransactionDraft | null>(null)
+  const [scanError, setScanError] = useState('')
   const [accountModalVisible, setAccountModalVisible] = useState(false)
   const [editingAccount, setEditingAccount] = useState<CarouselAccountCard | null>(null)
   const [newAccountName, setNewAccountName] = useState('')
@@ -66,6 +71,7 @@ export default function Page() {
 
   const {
     categories,
+    groupedCategories,
     fetchCategories,
   } = useCategories(currentUserId);
 
@@ -328,14 +334,35 @@ export default function Page() {
           </View>
         </View>
 
-        <TouchableOpacity 
-          style={localStyles.addSectionBtn} 
-          onPress={() => router.push('/home/create')}
-        >
-          <Ionicons name="add" size={16} color="#03151E" />
-          <Text style={localStyles.addSectionBtnText}>New</Text>
-        </TouchableOpacity>
+        <View style={localStyles.headerActions}>
+          <ReceiptScannerButton
+            userId={currentUserId}
+            onScanStart={() => setScanError('')}
+            onError={setScanError}
+            onDraft={(draft) => {
+              setReceiptDraft(draft)
+              setAddModalVisible(true)
+            }}
+          />
+          <TouchableOpacity 
+            style={localStyles.addSectionBtn} 
+            onPress={() => { setReceiptDraft(null); setAddModalVisible(true) }}
+          >
+            <Ionicons name="add" size={16} color="#03151E" />
+            <Text style={localStyles.addSectionBtnText}>New</Text>
+          </TouchableOpacity>
+        </View>
       </View>
+
+      {!!scanError && (
+        <View style={localStyles.scanErrorBox}>
+          <Ionicons name="alert-circle-outline" size={18} color="#FF6B6B" />
+          <Text style={localStyles.scanErrorText}>{scanError}</Text>
+          <TouchableOpacity onPress={() => setScanError('')} hitSlop={8}>
+            <Ionicons name="close" size={18} color="#FF6B6B" />
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* TRANSACTIONS */}
       <FlatList
@@ -345,7 +372,7 @@ export default function Page() {
         renderItem={({ item }) => (
           <TransactionItem item={item as any} onDelete={handleDeleteTransaction} onEdit={(tx) => setEditingTransaction(tx)}/>
         )}
-        ListEmptyComponent={<NoTransactionsFound />}
+        ListEmptyComponent={<NoTransactionsFound onAdd={() => { setReceiptDraft(null); setAddModalVisible(true) }} />}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl 
@@ -355,6 +382,22 @@ export default function Page() {
             colors={['#00D293']}
           />
         }
+      />
+
+      {/* ADD TRANSACTION MODAL */}
+      <AddTransactionModal
+        visible={addModalVisible}
+        userId={currentUserId}
+        accounts={accounts as any[]}
+        groups={groupedCategories}
+        defaultAccountId={
+          activeAccount && !activeAccount.isOverview && !activeAccount.isAddButton ? activeAccount.id : null
+        }
+        initialDraft={receiptDraft}
+        onClose={() => { setAddModalVisible(false); setReceiptDraft(null) }}
+        onCreated={async () => {
+          await Promise.all([loadTransactions(), fetchAccounts(), fetchCategories()])
+        }}
       />
 
       {/* EDIT TRANSACTION MODAL */}
@@ -551,6 +594,29 @@ const localStyles = StyleSheet.create({
     fontSize: 11, 
     color: '#9EE5CF', 
     fontWeight: '700' 
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  scanErrorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,107,107,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,107,107,0.3)',
+  },
+  scanErrorText: {
+    flex: 1,
+    color: '#FF6B6B',
+    fontSize: 12,
+    fontWeight: '600',
   },
   addSectionBtn: {
     flexDirection: 'row',
