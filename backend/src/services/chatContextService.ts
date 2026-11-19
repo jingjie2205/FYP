@@ -1,5 +1,6 @@
 import { sql } from "../config/db.js";
 import { addMonths, parseMonth } from "./budgetService.js";
+import { getForecast } from "./forecastService.js";
 
 /**
  * READ-ONLY financial snapshot for the chat assistant.
@@ -62,6 +63,22 @@ export interface ChatContext {
     is_active: boolean;
   }[];
   unallocatedPool: number;
+  /** Model projections for the current month (null when the ML service is unavailable) */
+  forecast: ChatForecast | null;
+}
+
+export interface ChatForecast {
+  month: string;
+  totalPredictedSpend: number;
+  totalPlannedBudget: number;
+  /** Envelopes projected to finish over budget, worst first */
+  projectedOverspends: {
+    category: string;
+    plannedBudget: number;
+    predictedSpend: number;
+    projectedOverBy: number;
+    model: string;
+  }[];
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -89,6 +106,7 @@ export async function buildChatContext(userId: string, todayInput?: unknown): Pr
     recentRows,
     savingsRows,
     recurringRows,
+    forecastResult,
   ] = await Promise.all([
     sql`SELECT id, name, balance, is_default FROM accounts WHERE user_id = ${userId} ORDER BY created_at ASC`,
     // Cash flow per account (same rule the app uses: skip the opening balance if an "Initial Balance" transaction exists)
@@ -147,6 +165,8 @@ export async function buildChatContext(userId: string, todayInput?: unknown): Pr
       WHERE rt.user_id = ${userId}
       ORDER BY rt.created_at DESC
     `,
+    // Non-blocking: resolves to null if the ML service is offline or slow
+    getForecast(userId, today.slice(0, 7), 2500),
   ]);
 
   // ---- Accounts & total cash ----
@@ -236,5 +256,23 @@ export async function buildChatContext(userId: string, todayInput?: unknown): Pr
   const saved = savingsPlans.reduce((s, p) => s + p.saved_amount, 0);
   const unallocatedPool = round2(totalCash - reserved - saved);
 
-  return { today, currentMonth, accounts, totalCash, envelopes, spendingSummary, recentTransactions, savingsPlans, recurring, unallocatedPool };
+  const forecast: ChatForecast | null = forecastResult
+    ? {
+        month: forecastResult.month,
+        totalPredictedSpend: forecastResult.totalPredictedSpend,
+        totalPlannedBudget: forecastResult.totalPlannedBudget,
+        projectedOverspends: forecastResult.envelopes
+          .filter((e) => e.projectedDelta > 0.005)
+          .slice(0, 8)
+          .map((e) => ({
+            category: e.categoryName,
+            plannedBudget: e.plannedBudget,
+            predictedSpend: e.predictedSpend,
+            projectedOverBy: e.projectedDelta,
+            model: e.modelUsed,
+          })),
+      }
+    : null;
+
+  return { today, currentMonth, accounts, totalCash, envelopes, spendingSummary, recentTransactions, savingsPlans, recurring, unallocatedPool, forecast };
 }

@@ -1,6 +1,6 @@
 import { Tabs } from "expo-router";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
-import { View, StyleSheet, Platform } from "react-native";
+import { StyleSheet, Platform } from "react-native";
 import { useEffect, useState } from "react";
 import { useUser } from "@clerk/expo";
 import { MonthProvider } from "@/hooks/useMonth";
@@ -30,6 +30,7 @@ export default function HomeLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
+        tabBarHideOnKeyboard: true,
         tabBarActiveTintColor: "#00D293",
         tabBarInactiveTintColor: "#5A6E85",
         tabBarStyle: styles.tabBar,
@@ -65,23 +66,8 @@ export default function HomeLayout() {
         }}
       />
 
-      {/* Center Highlighted OCR Tab */}
-      <Tabs.Screen
-        name="scan-ocr"
-        options={{
-          title: "Scan",
-          tabBarIcon: ({ color, focused }) => (
-            <View style={styles.ocrIconWrapper}>
-              {focused && <View style={styles.activePillDot} />}
-              <Ionicons
-                name={focused ? "camera" : "camera-outline"}
-                size={23}
-                color={color}
-              />
-            </View>
-          ),
-        }}
-      />
+      {/* Scan page stays routable but is hidden from the tab bar (scanning lives on Home) */}
+      <Tabs.Screen name="scan-ocr" options={{ href: null }} />
 
       <Tabs.Screen
         name="recurring"
@@ -148,21 +134,5 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     letterSpacing: 0.2,
     marginTop: 2,
-  },
-  ocrIconWrapper: {
-    alignItems: "center",
-    justifyContent: "center",
-    position: "relative",
-    width: 32,
-    height: 26,
-  },
-  activePillDot: {
-    position: "absolute",
-    top: -3,
-    right: -2,
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "#00D293",
   },
 });

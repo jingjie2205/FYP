@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -12,8 +12,10 @@ import {
   Switch,
   ActivityIndicator,
   Alert,
+  RefreshControl,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from 'expo-router';
 import { useUser } from '@clerk/expo';
 import { useAccounts } from '@/hooks/useAccounts';
 import { useCategories } from '@/hooks/useCategories';
@@ -47,6 +49,9 @@ export default function RecurringScreen() {
   const { user } = useUser();
   const [items, setItems] = useState<RecurringTransaction[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  // The full-screen spinner is only for the very first load, so later refreshes never unmount the list
+  const hasLoadedRef = useRef(false);
 
   // Modal form states
   const [modalVisible, setModalVisible] = useState(false);
@@ -76,11 +81,12 @@ export default function RecurringScreen() {
   }, [accounts, accountId]);
 
   // Fetch recurring transactions from backend
-  const fetchRecurringTransactions = async () => {
-    if (!user?.id) return;
+  const userId = user?.id;
+  const fetchRecurringTransactions = useCallback(async () => {
+    if (!userId) return;
     try {
-      setIsLoading(true);
-      const response = await fetch(`${API_URL}/recurring/${user.id}`);
+      if (!hasLoadedRef.current) setIsLoading(true);
+      const response = await fetch(`${API_URL}/recurring/${userId}`);
       const data = await response.json();
       if (response.ok) {
         setItems(data);
@@ -90,14 +96,32 @@ export default function RecurringScreen() {
     } catch (error) {
       console.error('Network error fetching recurring transactions:', error);
     } finally {
+      hasLoadedRef.current = true;
       setIsLoading(false);
     }
-  };
+  }, [userId]);
+
+  // Pull-to-refresh
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await fetchRecurringTransactions();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [fetchRecurringTransactions]);
+
+  // Reload whenever this tab regains focus, so rules created or edited from Chat show up immediately
+  useFocusEffect(
+    useCallback(() => {
+      fetchRecurringTransactions();
+    }, [fetchRecurringTransactions])
+  );
 
   // Refetch when the app has posted new recurring transactions
   useEffect(() => {
     fetchRecurringTransactions();
-  }, [user?.id, rolloverVersion]);
+  }, [fetchRecurringTransactions, rolloverVersion]);
 
   // Open the modal empty, for a new rule
   const openCreate = (newType: 'expense' | 'income') => {
@@ -485,7 +509,14 @@ export default function RecurringScreen() {
       </View>
 
       {/* Main Recurring List */}
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { flexGrow: 1 }]}
+        showsVerticalScrollIndicator={false}
+        alwaysBounceVertical
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00D293" colors={['#00D293']} />
+        }
+      >
         {/* EXPENSES SECTION */}
         <View style={styles.sectionHeader}>
           <View style={styles.sectionTitleWrap}>
