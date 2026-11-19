@@ -1,28 +1,28 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, Modal, TextInput, KeyboardAvoidingView, Platform, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, Modal, TextInput, KeyboardAvoidingView, Platform, StyleSheet, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SavingsPlan } from '@/hooks/useSavings';
+import DatePickerField from '@/components/DatePickerField';
 
 interface Props {
   visible: boolean;
   initialData?: SavingsPlan | null;
   onClose: () => void;
-  onSave: (payload: { name: string; target_amount: number; saved_amount: number; deadline: string }) => void;
+  onSave: (payload: { name: string; target_amount: number; deadline: string }) => void;
   onDelete?: () => void;
 }
 
 export default function SavingsModal({ visible, initialData, onClose, onSave, onDelete }: Props) {
   const [name, setName] = useState('');
   const [target, setTarget] = useState('');
-  const [saved, setSaved] = useState('');
   const [deadline, setDeadline] = useState('');
 
   useEffect(() => {
     if (visible) {
       setName(initialData?.name || '');
       setTarget(initialData?.target_amount ? String(initialData.target_amount) : '');
-      setSaved(initialData?.saved_amount ? String(initialData.saved_amount) : '');
-      setDeadline(initialData?.deadline || '');
+      // Keep only the date part so timestamps from the API never leak into the picker
+      setDeadline(initialData?.deadline ? String(initialData.deadline).slice(0, 10) : '');
     }
   }, [visible, initialData]);
 
@@ -30,8 +30,8 @@ export default function SavingsModal({ visible, initialData, onClose, onSave, on
     onSave({
       name: name.trim(),
       target_amount: parseFloat(target) || 0,
-      saved_amount: parseFloat(saved) || 0,
-      deadline: deadline.trim() || '2027-12-31'
+      // Empty = no target date (shown as "Ongoing"); otherwise always a real YYYY-MM-DD from the picker
+      deadline
     });
   };
 
@@ -49,6 +49,7 @@ export default function SavingsModal({ visible, initialData, onClose, onSave, on
             </TouchableOpacity>
           </View>
           
+          <ScrollView style={{ maxHeight: 480 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
           <Text style={styles.label}>GOAL TITLE</Text>
           <TextInput 
             style={styles.input} 
@@ -70,27 +71,15 @@ export default function SavingsModal({ visible, initialData, onClose, onSave, on
                 onChangeText={setTarget}
               />
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.label}>SAVED ($)</Text>
-              <TextInput 
-                style={styles.input} 
-                placeholder="0.00" 
-                placeholderTextColor="#475569"
-                keyboardType="decimal-pad"
-                value={saved}
-                onChangeText={setSaved}
-              />
-            </View>
           </View>
 
+          {!initialData && (
+            <Text style={styles.hintText}>Goals start at $0. Add funds from your Unallocated Cash after creating it.</Text>
+          )}
+
           <Text style={styles.label}>TARGET DATE</Text>
-          <TextInput 
-            style={styles.input} 
-            placeholder="YYYY-MM-DD" 
-            placeholderTextColor="#475569"
-            value={deadline}
-            onChangeText={setDeadline}
-          />
+          <DatePickerField value={deadline} onChange={setDeadline} placeholder="Select a target date" />
+          </ScrollView>
 
           <View style={styles.modalButtons}>
             <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
@@ -122,6 +111,7 @@ const styles = StyleSheet.create({
   modalCloseBtn: { padding: 4, backgroundColor: '#1E2D3D', borderRadius: 12 },
   label: { color: '#94A3B8', fontSize: 11, fontWeight: '700', letterSpacing: 1, marginBottom: 8, marginTop: 16 },
   input: { backgroundColor: '#03151E', borderWidth: 1, borderColor: '#1E2D3D', borderRadius: 12, padding: 16, color: '#FFFFFF', fontSize: 16 },
+  hintText: { color: '#64748B', fontSize: 12, marginTop: 10 },
   modalInputRow: { flexDirection: 'row', gap: 12 },
   modalButtons: { flexDirection: 'row', gap: 12, marginTop: 32 },
   cancelBtn: { flex: 1, padding: 16, borderRadius: 12, backgroundColor: '#1E2D3D', alignItems: 'center' },

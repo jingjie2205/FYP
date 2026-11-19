@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { Alert } from 'react-native';
+import { getPhoneDateString } from '@/utils/month';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
@@ -31,7 +32,8 @@ export const useSavings = (userId: string | undefined) => {
     }
   }, [userId]);
 
-  const createSavingsPlan = async (planData: Omit<SavingsPlan, 'id'>) => {
+  // New goals always start at 0 saved; money only enters a goal through contributeToPlan
+  const createSavingsPlan = async (planData: Pick<SavingsPlan, 'name' | 'target_amount' | 'deadline'>) => {
     if (!userId) return false;
     try {
       const response = await fetch(`${API_URL}/savings/${userId}`, {
@@ -50,7 +52,7 @@ export const useSavings = (userId: string | undefined) => {
     }
   };
 
-  const updateSavingsPlan = async (id: string, planData: Partial<SavingsPlan>) => {
+  const updateSavingsPlan = async (id: string, planData: Partial<Pick<SavingsPlan, 'name' | 'target_amount' | 'deadline'>>) => {
     try {
       const response = await fetch(`${API_URL}/savings/plan/${id}`, {
         method: 'PUT',
@@ -68,6 +70,7 @@ export const useSavings = (userId: string | undefined) => {
     }
   };
 
+  // Deleting a goal releases its saved amount back into Unallocated Cash
   const deleteSavingsPlan = async (planId: string) => {
     try {
       const response = await fetch(`${API_URL}/savings/${planId}`, { 
@@ -78,6 +81,7 @@ export const useSavings = (userId: string | undefined) => {
         throw new Error('Failed to delete savings plan');
       }
       
+      setSavingsPlans(prev => prev.filter(p => p.id !== planId));
       return true;
     } catch (error) {
       console.error('Error deleting savings plan:', error);
@@ -85,5 +89,32 @@ export const useSavings = (userId: string | undefined) => {
     }
   };
 
-  return { savingsPlans, isLoading, fetchSavings, createSavingsPlan, updateSavingsPlan, deleteSavingsPlan };
+  // Moves money between Unallocated Cash and a goal (recorded as a 'savings' /
+  // 'savings_withdrawal' transaction that never affects account balances).
+  const moveFunds = async (planId: string, amount: number, direction: 'contribute' | 'withdraw') => {
+    if (!userId) return false;
+    try {
+      const response = await fetch(`${API_URL}/savings/${planId}/${direction}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userId, amount, transaction_date: getPhoneDateString() }),
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || 'Request failed');
+      }
+      const updated = await response.json();
+      setSavingsPlans(prev => prev.map(p => (p.id === planId ? updated : p)));
+      return true;
+    } catch (error) {
+      console.error(`Error during savings ${direction}:`, error);
+      Alert.alert('Error', error instanceof Error ? error.message : 'Could not update savings goal.');
+      return false;
+    }
+  };
+
+  const contributeToPlan = (planId: string, amount: number) => moveFunds(planId, amount, 'contribute');
+  const withdrawFromPlan = (planId: string, amount: number) => moveFunds(planId, amount, 'withdraw');
+
+  return { savingsPlans, isLoading, fetchSavings, createSavingsPlan, updateSavingsPlan, deleteSavingsPlan, contributeToPlan, withdrawFromPlan };
 };
