@@ -16,6 +16,7 @@ import {
 } from 'react-native'
 import { useTransactions } from '@/hooks/useTransactions'
 import { useAccounts } from '@/hooks/useAccounts'
+import { useCategories } from '@/hooks/useCategories'
 import { useEffect, useState, useMemo } from 'react'
 import PageLoader from '@/components/PageLoader'
 import { Ionicons } from '@expo/vector-icons'
@@ -23,6 +24,10 @@ import { useRouter } from 'expo-router'
 import { TransactionItem } from '@/components/TransactionItem'
 import NoTransactionsFound from '@/components/NoTransactionsFound'
 import { AccountCarousel, CarouselAccountCard } from '@/components/AccountCarousel'
+import EditTransactionModal from '@/components/EditTransactionModal'
+import MonthSelector from '@/components/MonthSelector'
+import { useMonth } from '@/hooks/useMonth'
+import { formatMonthKey, getTransactionMonthKey } from '@/utils/month'
 
 export default function Page() {
   const { user, isLoaded, isSignedIn } = useUser()
@@ -32,6 +37,7 @@ export default function Page() {
   const [activeAccountIndex, setActiveAccountIndex] = useState(0)
 
   // CRUD Modal States
+  const [editingTransaction, setEditingTransaction] = useState<any | null>(null)
   const [accountModalVisible, setAccountModalVisible] = useState(false)
   const [editingAccount, setEditingAccount] = useState<CarouselAccountCard | null>(null)
   const [newAccountName, setNewAccountName] = useState('')
@@ -39,11 +45,13 @@ export default function Page() {
   const [newAccountType, setNewAccountType] = useState('checking')
 
   const currentUserId = isLoaded && isSignedIn ? user?.id : undefined;
+  const { selectedMonth, isCurrentMonth, rolloverVersion } = useMonth();
 
   const { 
     transactions, 
     isLoading: isTransactionsLoading, 
     loadData: loadTransactions, 
+    updateTransaction,
     deleteTransaction 
   } = useTransactions(currentUserId)
 
@@ -56,9 +64,14 @@ export default function Page() {
     deleteAccount
   } = useAccounts(currentUserId);
 
+  const {
+    categories,
+    fetchCategories,
+  } = useCategories(currentUserId);
+
   const onRefresh = async () => {
     setRefreshing(true)
-    await Promise.all([loadTransactions(), fetchAccounts()])
+    await Promise.all([loadTransactions(), fetchAccounts(), fetchCategories()])
     setRefreshing(false)
   }
 
@@ -66,8 +79,20 @@ export default function Page() {
     if (currentUserId) {
       loadTransactions();
       fetchAccounts();
+      fetchCategories();
     }
-  }, [currentUserId, loadTransactions, fetchAccounts])
+  }, [currentUserId, loadTransactions, fetchAccounts, fetchCategories, rolloverVersion])
+
+  // Map category_id -> category name for fast lookup
+  const categoryNameMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    (categories || []).forEach((cat: any) => {
+      if (cat?.id && cat?.name) {
+        map[cat.id] = cat.name;
+      }
+    });
+    return map;
+  }, [categories]);
 
   const handleOpenCreateAccount = () => {
     setEditingAccount(null);
@@ -134,17 +159,15 @@ export default function Page() {
   };
 
   // ==========================================
-  // DYNAMIC RUNNING BALANCE CALCULATION
+  //  BALANCE CALCULATION
   // ==========================================
   const accountCards: CarouselAccountCard[] = useMemo(() => {
-    // 1. Group transactions by account
     const accTxsMap: Record<string, any[]> = {};
     (transactions || []).forEach((t: any) => {
       if (!accTxsMap[t.account_id]) accTxsMap[t.account_id] = [];
       accTxsMap[t.account_id].push(t);
     });
 
-    // 2. Map individual cards securely to avoid double-counting
     const individualCards: CarouselAccountCard[] = accounts.map((acc: any) => {
       const baseBalance = Number(acc.balance || 0);
       const accTxs = accTxsMap[acc.id] || [];
@@ -157,15 +180,12 @@ export default function Page() {
         if (t.type === 'income') netTransactionFlow += amt;
         else if (t.type === 'expense') netTransactionFlow -= amt;
 
-        // Detect if the starting balance is physically recorded as a transaction
         const txName = String(t.name || t.title || t.description || '').toLowerCase();
         if (txName.includes('initial balance')) {
           hasInitialTxInLedger = true;
         }
       });
 
-      // FIX: If the backend already created an "Initial Balance" transaction, 
-      // adding the baseBalance again causes double-counting!
       const trueBalance = hasInitialTxInLedger ? netTransactionFlow : baseBalance + netTransactionFlow;
 
       return {
@@ -176,7 +196,6 @@ export default function Page() {
       };
     });
 
-    // 3. Aggregate total for the overview card
     const totalBalance = individualCards.reduce((sum, acc) => sum + acc.balance, 0);
     
     const overviewCard: CarouselAccountCard = {
@@ -198,14 +217,42 @@ export default function Page() {
     return [overviewCard, ...individualCards, addCard];
   }, [accounts, transactions]); 
 
-  const isPageLoading = (isTransactionsLoading || isAccountsLoading) && !refreshing && isSignedIn;
-  if (isPageLoading) return <PageLoader />
-
   const activeAccount = accountCards[activeAccountIndex] || accountCards[0];
 
-  const filteredTransactions = activeAccount?.id === 'all' 
-    ? transactions 
-    : (transactions as any[]).filter(t => t.account_id === activeAccount?.id);
+  // Account balances above use ALL transactions; the list below only shows the selected month.
+  const filteredTransactions = useMemo(() => {
+    const baseList = (transactions as any[]).filter((t) =>
+      getTransactionMonthKey(t) === selectedMonth &&
+      (activeAccount?.id === 'all' || t.account_id === activeAccount?.id)
+    );
+
+    return baseList.map((tx) => ({
+      ...tx,
+      category:
+        (tx.type === 'savings' || tx.type === 'savings_withdrawal')
+          ? (tx.type === 'savings' ? 'To Savings Goal' : 'From Savings Goal')
+          : (tx.category_id && categoryNameMap[tx.category_id]) ||
+        tx.category_name ||
+        tx.category ||
+        'General',
+    }));
+  }, [transactions, activeAccount, categoryNameMap, selectedMonth]);
+
+  // Income / expense totals for the selected month
+  const monthTotals = useMemo(() => {
+    return filteredTransactions.reduce(
+      (acc, t: any) => {
+        const amt = Number(t.amount || 0);
+        if (t.type === 'income') acc.income += amt;
+        else if (t.type === 'expense') acc.expenses += amt;
+        return acc;
+      },
+      { income: 0, expenses: 0 }
+    );
+  }, [filteredTransactions]);
+
+  const isPageLoading = (isTransactionsLoading || isAccountsLoading) && !refreshing && isSignedIn;
+  if (isPageLoading) return <PageLoader />
 
   return (
     <View style={localStyles.container}>
@@ -238,12 +285,38 @@ export default function Page() {
         onOpenEdit={handleOpenEditAccount}
       />
 
+      {/* MONTH SELECTOR */}
+      <MonthSelector style={localStyles.monthSelector} />
+
+      {!activeAccount?.isAddButton && (
+        <View style={localStyles.monthTotalsRow}>
+          <View style={localStyles.monthTotalItem}>
+            <Text style={localStyles.monthTotalLabel}>INCOME</Text>
+            <Text style={[localStyles.monthTotalValue, { color: '#00D293' }]}>
+              +${monthTotals.income.toFixed(2)}
+            </Text>
+          </View>
+          <View style={localStyles.monthTotalItem}>
+            <Text style={localStyles.monthTotalLabel}>EXPENSES</Text>
+            <Text style={[localStyles.monthTotalValue, { color: '#FF6B6B' }]}>
+              -${monthTotals.expenses.toFixed(2)}
+            </Text>
+          </View>
+          <View style={localStyles.monthTotalItem}>
+            <Text style={localStyles.monthTotalLabel}>NET</Text>
+            <Text style={localStyles.monthTotalValue}>
+              ${(monthTotals.income - monthTotals.expenses).toFixed(2)}
+            </Text>
+          </View>
+        </View>
+      )}
+
       {/* SECTION HEADER */}
       <View style={localStyles.sectionHeader}>
         <View style={localStyles.sectionTitleWrap}>
           <Text style={localStyles.sectionTitle}>
             {activeAccount?.isOverview 
-              ? 'Recent Activity' 
+              ? (isCurrentMonth ? 'Recent Activity' : formatMonthKey(selectedMonth, true))
               : activeAccount?.isAddButton 
                 ? 'Activity' 
                 : `${activeAccount?.name}`}
@@ -264,13 +337,13 @@ export default function Page() {
         </TouchableOpacity>
       </View>
 
-      {/* TRANSACTIONS FEED */}
+      {/* TRANSACTIONS */}
       <FlatList
         style={localStyles.transactionsList}
         contentContainerStyle={localStyles.transactionsListContent}
         data={activeAccount?.isAddButton ? [] : filteredTransactions}
         renderItem={({ item }) => (
-          <TransactionItem item={item as any} onDelete={handleDeleteTransaction}/>
+          <TransactionItem item={item as any} onDelete={handleDeleteTransaction} onEdit={(tx) => setEditingTransaction(tx)}/>
         )}
         ListEmptyComponent={<NoTransactionsFound />}
         showsVerticalScrollIndicator={false}
@@ -282,6 +355,18 @@ export default function Page() {
             colors={['#00D293']}
           />
         }
+      />
+
+      {/* EDIT TRANSACTION MODAL */}
+      <EditTransactionModal
+        transaction={editingTransaction}
+        accounts={accounts as any[]}
+        categories={categories as any[]}
+        onClose={() => setEditingTransaction(null)}
+        onSave={async (id, payload) => {
+          const ok = await updateTransaction(id, payload)
+          if (ok) setEditingTransaction(null)
+        }}
       />
 
       {/* CREATE / EDIT ACCOUNT MODAL */}
@@ -407,6 +492,35 @@ const localStyles = StyleSheet.create({
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  monthSelector: {
+    marginTop: 12,
+  },
+  monthTotalsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+  },
+  monthTotalItem: {
+    flex: 1,
+    backgroundColor: '#0C1521',
+    borderWidth: 1,
+    borderColor: '#192839',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  monthTotalLabel: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#64748B',
+    letterSpacing: 0.8,
+  },
+  monthTotalValue: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    marginTop: 2,
   },
   sectionHeader: { 
     flexDirection: 'row', 

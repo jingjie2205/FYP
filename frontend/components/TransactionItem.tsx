@@ -9,12 +9,15 @@ interface Transaction {
   category: string;
   amount: number | string;
   created_at: string;
-  type: "income" | "expense";
+  transaction_date?: string;
+  type: "income" | "expense" | "savings" | "savings_withdrawal";
 }
 
 interface TransactionItemProps {
   item: Transaction;
   onDelete: (id: string) => void;
+  /** Called when the card is pressed */
+  onEdit?: (item: Transaction) => void;
 }
 
 const CATEGORY_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -27,21 +30,26 @@ const CATEGORY_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
   Other: "ellipsis-horizontal-outline",
 };
 
-export const TransactionItem = ({ item, onDelete }: TransactionItemProps) => {
+export const TransactionItem = ({ item, onDelete, onEdit }: TransactionItemProps) => {
   const isIncome = item.type === "income";
-  const iconName = CATEGORY_ICONS[item.category] || "pricetag-outline";
+  // Moves between Unallocated Cash and a savings goal: they never change account balances,
+  // so they get a neutral look, no +/- sign, and can't be edited or removed from here.
+  const isSavings = item.type === "savings" || item.type === "savings_withdrawal";
+  const iconName = isSavings
+    ? (item.type === "savings" ? "arrow-down-circle-outline" : "arrow-up-circle-outline")
+    : (CATEGORY_ICONS[item.category] || "pricetag-outline");
 
   const parsedAmount = Math.abs(parseFloat(item.amount?.toString() || "0")).toFixed(2);
 
   return (
     <View style={styles.card}>
-      <TouchableOpacity style={styles.content} activeOpacity={0.7}>
+      <TouchableOpacity style={styles.content} activeOpacity={0.7} onPress={() => { if (!isSavings) onEdit?.(item); }}>
         {/* Category Icon Badge */}
-        <View style={[styles.iconContainer, isIncome ? styles.iconIncome : styles.iconExpense]}>
+        <View style={[styles.iconContainer, isSavings ? styles.iconSavings : isIncome ? styles.iconIncome : styles.iconExpense]}>
           <Ionicons
             name={iconName}
             size={20}
-            color={isIncome ? "#00D293" : "#FF6B6B"}
+            color={isSavings ? "#06B6D4" : isIncome ? "#00D293" : "#FF6B6B"}
           />
         </View>
 
@@ -57,21 +65,23 @@ export const TransactionItem = ({ item, onDelete }: TransactionItemProps) => {
 
         {/* Amount & Date */}
         <View style={styles.infoRight}>
-          <Text style={[styles.amountText, isIncome ? styles.incomeText : styles.expenseText]}>
-            {isIncome ? "+" : "-"}${parsedAmount}
+          <Text style={[styles.amountText, isSavings ? styles.savingsText : isIncome ? styles.incomeText : styles.expenseText]}>
+            {isSavings ? "" : isIncome ? "+" : "-"}${parsedAmount}
           </Text>
-          <Text style={styles.dateText}>{formatDate(item.created_at)}</Text>
+          <Text style={styles.dateText}>{formatDate(item.transaction_date ? `${item.transaction_date.slice(0, 10)}T00:00:00` : item.created_at)}</Text>
         </View>
       </TouchableOpacity>
 
-      {/* Delete Button */}
-      <TouchableOpacity
-        style={styles.deleteButton}
-        onPress={() => onDelete(item.id)}
-        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      >
-        <Ionicons name="trash-outline" size={18} color="#64748B" />
-      </TouchableOpacity>
+      {/* Trash button (not shown for savings moves) */}
+      {!isSavings && (
+        <TouchableOpacity
+          style={styles.deleteButton}
+          onPress={() => onDelete(item.id)}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name="trash-outline" size={18} color="#64748B" />
+        </TouchableOpacity>
+      )}
     </View>
   );
 };
@@ -105,6 +115,13 @@ const styles = StyleSheet.create({
   iconIncome: {
     backgroundColor: "#0C2028",
     borderColor: "#174747",
+  },
+  iconSavings: {
+    backgroundColor: "#0A1D26",
+    borderColor: "#124455",
+  },
+  savingsText: {
+    color: "#06B6D4",
   },
   iconExpense: {
     backgroundColor: "#1D1620",

@@ -46,6 +46,37 @@ export const useTransactions = (userId : string | undefined) => {
     }
   }, [userId, fetchTransactions, fetchSummary])
 
+  const updateTransaction = async (
+    id : string,
+    payload : {
+      title?: string
+      amount?: number
+      type?: 'income' | 'expense'
+      account_id?: string
+      category_id?: string | null
+      notes?: string | null
+      transaction_date?: string
+    }
+  ) => {
+    try {
+        const response = await fetch(`${API_URL}/transactions/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...payload, user_id: userId }),
+        })
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}))
+            throw new Error(err.error || 'Failed to update transaction')
+        }
+        await loadData()
+        return true
+    } catch (e) {
+        console.error('Error updating transaction:', e)
+        Alert.alert('Error', e instanceof Error ? e.message : 'Could not update transaction')
+        return false
+    }
+  }
+
   const deleteTransaction = async (id : string) => {
     try {
         const response = await fetch(`${API_URL}/transactions/${id}`, {
@@ -68,6 +99,7 @@ export const useTransactions = (userId : string | undefined) => {
     summary,
     isLoading,
     loadData,
+    updateTransaction,
     deleteTransaction,
   }
 }
