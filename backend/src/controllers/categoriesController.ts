@@ -141,13 +141,28 @@ export async function updateCategory(req: Request, res: Response) {
         const categoryId = String(id);
         // month: which month's assigned amount to change (defaults to the user's active month)
         // apply_to_default: false = one-off change for this month only (e.g. covering overspending)
-        const { group_id, name, target_amount, current_amount, month: monthInput, apply_to_default } = req.body;
+        const { group_id, name, current_amount, month: monthInput, apply_to_default } = req.body;
+        // The amount may arrive as target_amount (original), assigned or budget
+        const target_amount = req.body.target_amount ?? req.body.assigned ?? req.body.budget;
+        const requesterId = req.body.userId ?? req.body.user_id;
 
         if (!categoryId) {
             return res.status(400).json({ error: "Category ID is required" });
         }
 
         const hasTarget = target_amount !== undefined && target_amount !== null;
+        if (hasTarget && (!Number.isFinite(Number(target_amount)) || Number(target_amount) < 0)) {
+            return res.status(400).json({ error: "Budget amount must be a number of 0 or more" });
+        }
+
+        // If the caller says who they are, make sure the category is theirs before changing it
+        if (requesterId) {
+            const [owned] = await sql`SELECT id FROM categories WHERE id = ${categoryId} AND user_id = ${String(requesterId)}`;
+            if (!owned) {
+                return res.status(404).json({ error: "Category not found" });
+            }
+        }
+
         const newDefault = hasTarget && apply_to_default !== false ? Number(target_amount) : null;
 
         const [updatedCategory] = await sql`
@@ -167,7 +182,14 @@ export async function updateCategory(req: Request, res: Response) {
 
         const month = parseMonth(monthInput) || await getActiveMonth(updatedCategory.user_id);
         if (hasTarget) {
+            // Seeds the month's other envelopes if needed, then guarantees this envelope's (category, month) row holds the new amount
             await setMonthAssigned(updatedCategory.user_id, categoryId, month, Number(target_amount));
+            await sql`
+                INSERT INTO category_budgets (user_id, category_id, month, assigned, rollover)
+                VALUES (${updatedCategory.user_id}, ${categoryId}, ${month}::date, ${Number(target_amount)}, 0)
+                ON CONFLICT (category_id, month) DO UPDATE
+                SET assigned = EXCLUDED.assigned, updated_at = CURRENT_TIMESTAMP
+            `;
         }
 
         res.status(200).json(await getCategoryForMonth(categoryId, month));
