@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { Alert } from 'react-native';
+import { getPhoneDateString } from '@/utils/month';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
@@ -19,6 +20,24 @@ export interface Message {
   metadata?: any;
   created_at: string;
 }
+
+/** Metadata can arrive as a JSON string; always hand the UI a plain object. */
+export const parseMetadata = (metadata: any): any => {
+  if (typeof metadata === 'string') {
+    try {
+      return JSON.parse(metadata) ?? {};
+    } catch {
+      return {};
+    }
+  }
+  return metadata ?? {};
+};
+
+/** Unwraps { assistantMessage } / { message } responses and parses metadata. */
+const normalizeMessage = (raw: any): Message => {
+  const msg = raw?.assistantMessage ?? raw?.message ?? raw;
+  return { ...msg, metadata: parseMetadata(msg?.metadata) };
+};
 
 export const useChat = (userId: string | undefined) => {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -90,7 +109,7 @@ export const useChat = (userId: string | undefined) => {
       }
 
       const data = await response.json();
-      setMessages(data);
+      setMessages(Array.isArray(data) ? data.map(normalizeMessage) : []);
     } catch (error) {
       console.error('Error fetching messages:', error);
       Alert.alert('Error', 'Could not load chat history.');
@@ -112,6 +131,8 @@ export const useChat = (userId: string | undefined) => {
           role,
           content,
           metadata,
+          // The phone's date, so the assistant reasons about the right "today" and month
+          today: getPhoneDateString(),
         }),
       });
 
@@ -122,7 +143,7 @@ export const useChat = (userId: string | undefined) => {
         throw new Error(`Failed to send message: ${response.status} - ${responseText}`);
       }
 
-      const savedMessage = JSON.parse(responseText);
+      const savedMessage = normalizeMessage(JSON.parse(responseText));
       setMessages(prev => [...prev, savedMessage]);
       return savedMessage;
     } catch (error) {

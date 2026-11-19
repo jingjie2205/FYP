@@ -114,12 +114,12 @@ export default function ReceiptScannerButton({ userId, onDraft, onError, onScanS
     <TouchableOpacity style={[styles.scanBtn, isScanning && styles.disabled]} onPress={promptOptions} disabled={isScanning}>
       {isScanning ? (
         <>
-          <ActivityIndicator size="small" color="#38BDF8" />
+          <ActivityIndicator size="small" color="#00D293" />
           <Text style={styles.scanBtnText}>Scanning…</Text>
         </>
       ) : (
         <>
-          <Ionicons name="scan-outline" size={14} color="#38BDF8" />
+          <Ionicons name="scan-outline" size={14} color="#00D293" />
           <Text style={styles.scanBtnText}>Scan</Text>
         </>
       )}
@@ -131,14 +131,14 @@ const styles = StyleSheet.create({
   scanBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#121E2C',
+    backgroundColor: 'rgba(0, 210, 147, 0.12)',
     borderWidth: 1,
-    borderColor: '#1E2D3D',
+    borderColor: 'rgba(0, 210, 147, 0.3)',
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 14,
     gap: 6,
   },
   disabled: { opacity: 0.7 },
-  scanBtnText: { color: '#38BDF8', fontSize: 12, fontWeight: '700' },
+  scanBtnText: { color: '#00D293', fontSize: 12, fontWeight: '700' },
 });

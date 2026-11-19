@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -10,20 +10,28 @@ import {
   Dimensions,
   ActivityIndicator,
   Alert,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useUser } from '@clerk/expo';
-import { useChat } from '../../../hooks/useChat';
-import { useSavings } from '../../../hooks/useSavings';
+import { useChat, parseMetadata } from '../../../hooks/useChat';
+import { useAccounts } from '../../../hooks/useAccounts';
 import { useCategories } from '../../../hooks/useCategories';
 import ReallocationModal from '../../../components/chat/ReallocationModal';
+import BudgetAllocationModal, { BudgetPlan } from '../../../components/chat/BudgetAllocationModal';
+import RecurringProposalModal, { RecurringProposal, RecurringSubmission } from '../../../components/chat/RecurringProposalModal';
+import { getPhoneDateString, getPhoneMonthKey } from '../../../utils/month';
 
 const { width } = Dimensions.get('window');
 
 export default function ChatScreen() {
   const { user } = useUser();
   const userId = user?.id;
+  const insets = useSafeAreaInsets();
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
 
   const {
     sessions,
@@ -38,8 +46,9 @@ export default function ChatScreen() {
     setMessages,
   } = useChat(userId);
 
-  const { savingsPlans, fetchSavings } = useSavings(userId);
-  const { categories, fetchCategories } = useCategories(userId);
+  const { accounts, fetchAccounts } = useAccounts(userId);
+  // Current month's envelopes: target_amount is the amount assigned this month
+  const { categories, groupedCategories, fetchCategories } = useCategories(userId, getPhoneMonthKey());
 
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -52,23 +61,56 @@ export default function ChatScreen() {
     sourceCategory: '',
     destCategory: '',
     amount: 0,
-    sourceBefore: 100.0,
-    sourceAfter: 50.0,
-    destBefore: 20.0,
-    destAfter: 70.0,
+    sourceBefore: 0,
+    sourceAfter: 0,
+    destBefore: 0,
+    destAfter: 0,
   });
 
+  const [budgetPlan, setBudgetPlan] = useState<BudgetPlan | null>(null);
+  const [budgetModalVisible, setBudgetModalVisible] = useState(false);
+  const [recurringProposal, setRecurringProposal] = useState<RecurringProposal | null>(null);
+  const [recurringModalVisible, setRecurringModalVisible] = useState(false);
+
   const [inputText, setInputText] = useState('');
+  const scrollViewRef = useRef<ScrollView>(null);
+
+  const scrollToLatest = (animated = true) => scrollViewRef.current?.scrollToEnd({ animated });
+
+  // Keep the newest message visible when messages change or the keyboard opens
+  const latestMessageId = messages[messages.length - 1]?.id;
+  useEffect(() => {
+    const t = setTimeout(() => scrollToLatest(true), 50);
+    return () => clearTimeout(t);
+  }, [messages.length, latestMessageId]);
+
+  // Track keyboard visibility so the input bar can swap its bottom padding
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, () => setIsKeyboardVisible(true));
+    const hideSub = Keyboard.addListener(hideEvent, () => setIsKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    const event = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const sub = Keyboard.addListener(event, () => setTimeout(() => scrollToLatest(true), 50));
+    return () => sub.remove();
+  }, []);
   const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
   // Initial load
   useEffect(() => {
     if (userId) {
       fetchSessions();
-      fetchSavings();
+      fetchAccounts();
       fetchCategories(); // Load categories on mount
     }
-  }, [userId, fetchSessions, fetchSavings, fetchCategories]);
+  }, [userId, fetchSessions, fetchAccounts, fetchCategories]);
 
   // Set default active session once sessions load
   useEffect(() => {
@@ -79,6 +121,7 @@ export default function ChatScreen() {
   }, [sessions, activeSessionId, fetchMessages]);
 
   const handleSelectSession = (sessionId: string) => {
+    if (sessionId !== activeSessionId) setMessages([]);
     setActiveSessionId(sessionId);
     fetchMessages(sessionId);
     setIsDrawerOpen(false);
@@ -96,35 +139,138 @@ export default function ChatScreen() {
     setIsDrawerOpen(false);
   };
 
+  // Look a category up by id first, then by case-insensitive name
+  const findCategory = (id?: string, name?: string) =>
+    categories.find((c) => id && c.id === id) ||
+    categories.find((c) => name && c.name.trim().toLowerCase() === name.trim().toLowerCase());
+
+  const openReallocation = (det: any) => {
+    const src = findCategory(det.sourceCategoryId, det.sourceCategory);
+    const dest = findCategory(det.destCategoryId, det.destCategory);
+    const amount = Number(det.amount);
+    // Balances are the amounts assigned to each envelope this month
+    const srcBefore = Number(src?.target_amount ?? 0);
+    const destBefore = Number(dest?.target_amount ?? 0);
+
+    setActiveTransferDetails({
+      sourceCategory: src?.name || det.sourceCategory,
+      destCategory: dest?.name || det.destCategory,
+      amount,
+      sourceBefore: srcBefore,
+      sourceAfter: srcBefore - amount,
+      destBefore,
+      destAfter: destBefore + amount,
+    });
+    setIsReallocationModalVisible(true);
+  };
+
+  const openProposal = (metadata: any) => {
+    if (metadata?.actionType === 'reallocation' && metadata.transferDetails) {
+      openReallocation(metadata.transferDetails);
+    } else if (metadata?.actionType === 'budget_allocation' && metadata.budgetPlan) {
+      setBudgetPlan(metadata.budgetPlan);
+      setBudgetModalVisible(true);
+    } else if (metadata?.actionType === 'recurring_proposal' && metadata.recurringDetails) {
+      setRecurringProposal({ mode: metadata.mode, recurringDetails: metadata.recurringDetails });
+      setRecurringModalVisible(true);
+    }
+  };
+
   const handleSendMessage = async () => {
     if (!inputText.trim() || !activeSessionId) return;
 
     const userQuery = inputText.trim();
     setInputText('');
 
-    // Send user message to backend 
+    // Send user message to backend (the phone's date is added by useChat)
     const aiResponse = await sendMessage(activeSessionId, 'user', userQuery);
 
     // Refresh message list for the current session
     fetchMessages(activeSessionId);
 
-    // Check if Gemini detected a reallocation intent requiring modal confirmation
-    if (aiResponse?.metadata?.actionType === 'reallocation') {
-      const details = aiResponse.metadata.transferDetails;
-      const srcPlan = savingsPlans.find(p => p.name.toLowerCase() === details.sourceCategory.toLowerCase());
-      const destPlan = savingsPlans.find(p => p.name.toLowerCase() === details.destCategory.toLowerCase());
-
-      setActiveTransferDetails({
-        sourceCategory: details.sourceCategory,
-        destCategory: details.destCategory,
-        amount: details.amount,
-        sourceBefore: srcPlan?.saved_amount || 100.0,
-        sourceAfter: (srcPlan?.saved_amount || 100.0) - details.amount,
-        destBefore: destPlan?.saved_amount || 20.0,
-        destAfter: (destPlan?.saved_amount || 20.0) + details.amount,
-      });
-      setIsReallocationModalVisible(true);
+    // Proposals are never applied automatically: the user confirms them in a modal
+    const aiMetadata = parseMetadata(aiResponse?.metadata);
+    if (aiMetadata.actionType === 'reallocation') {
+      openProposal(aiMetadata);
     }
+  };
+
+  const announce = async (text: string) => {
+    if (!activeSessionId) return;
+    await sendMessage(activeSessionId, 'assistant', text);
+    fetchMessages(activeSessionId);
+  };
+
+  const handleConfirmBudget = async (plan: BudgetPlan) => {
+    const changes = plan.allocations.filter((a) => Math.abs(Number(a.proposedAssigned) - Number(a.currentAssigned)) >= 0.005);
+    if (changes.length === 0) {
+      throw new Error('This plan matches your current budget, so there is nothing to apply.');
+    }
+
+    let applied = 0;
+    for (const a of changes) {
+      const response = await fetch(`${API_URL}/categories/${a.categoryId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, target_amount: Number(a.proposedAssigned), month: plan.month }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        await fetchCategories();
+        throw new Error(
+          (applied > 0 ? `Applied ${applied} of ${changes.length} changes before a problem occurred. ` : '') +
+            (data.error || `Could not update "${a.categoryName}".`)
+        );
+      }
+      // The server returns the envelope as saved for that month: confirm the new amount really stuck
+      if (Math.abs(Number(data.target_amount) - Number(a.proposedAssigned)) >= 0.005) {
+        await fetchCategories();
+        throw new Error(`"${a.categoryName}" did not save the new amount. Nothing more was changed; please try again.`);
+      }
+      applied++;
+    }
+    setBudgetModalVisible(false);
+    await fetchCategories();
+    await announce(`✅ Your budget for ${plan.month} has been applied (${applied} envelope${applied === 1 ? '' : 's'} updated).`);
+  };
+
+  const handleConfirmRecurring = async (v: RecurringSubmission) => {
+    const isUpdate = v.mode === 'update' && !!v.recurringId;
+    const response = await fetch(isUpdate ? `${API_URL}/recurring/${v.recurringId}` : `${API_URL}/recurring`, {
+      method: isUpdate ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        isUpdate
+          ? {
+              user_id: userId,
+              title: v.title,
+              amount: v.amount,
+              frequency: v.frequency,
+              account_id: v.accountId,
+              ...(v.type === 'expense' ? { category_id: v.categoryId } : {}),
+              next_run_date: v.nextDate,
+              date: getPhoneDateString(),
+            }
+          : {
+              user_id: userId,
+              account_id: v.accountId,
+              category_id: v.categoryId,
+              title: v.title,
+              amount: v.amount,
+              type: v.type,
+              frequency: v.frequency,
+              next_run_date: v.nextDate,
+            }
+      ),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Could not save this recurring payment.');
+    }
+    setRecurringModalVisible(false);
+    await announce(
+      `✅ ${isUpdate ? 'Updated' : 'Created'} recurring ${v.type} "${v.title}" ($${v.amount.toFixed(2)} ${v.frequency.toLowerCase()}, next on ${v.nextDate}).`
+    );
   };
 
   const handleConfirmReallocation = async (details: any) => {
@@ -134,6 +280,7 @@ export default function ChatScreen() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: userId,
+          today: getPhoneDateString(),
           sourceName: details.sourceCategory.trim(),
           destName: details.destCategory.trim(),
           amount: details.amount,
@@ -165,7 +312,12 @@ export default function ChatScreen() {
   const activeSession = sessions.find(s => s.id === activeSessionId);
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : insets.top}
+      >
       {/* ================= HEADER ================= */}
       <View style={styles.header}>
         <TouchableOpacity
@@ -176,11 +328,11 @@ export default function ChatScreen() {
         </TouchableOpacity>
 
         <View style={styles.headerTitleContainer}>
-          <Text style={styles.headerTitle}>{activeSession?.session_name || 'Finley AI Chat'}</Text>
-          <View style={styles.statusIndicatorRow}>
-            <View style={styles.onlineDot} />
-            <Text style={styles.statusText}>Online</Text>
-          </View>
+          <Text style={styles.headerTitle}>{activeSession?.session_name || 'Chat'}</Text>
+          {/* <View style={styles.statusIndicatorRow}> */}
+          {/* <View style={styles.onlineDot} /> */}
+            {/* <Text style={styles.statusText}>Online</Text> */}
+          {/* </View> */}
         </View>
 
         <TouchableOpacity
@@ -192,18 +344,21 @@ export default function ChatScreen() {
       </View>
 
       {/* ================= MAIN CHAT AREA ================= */}
-      {isLoadingMessages ? (
+      {isLoadingMessages && messages.length === 0 ? (
         <View style={styles.loaderContainer}>
           <ActivityIndicator size="large" color="#00D293" />
         </View>
       ) : (
         <ScrollView
+          ref={scrollViewRef}
           style={styles.chatScroll}
           contentContainerStyle={styles.chatScrollContent}
+          keyboardShouldPersistTaps="handled"
+          onContentSizeChange={() => scrollToLatest(true)}
         >
           {messages.map((item) => {
             const isUser = item.role === 'user';
-            const hasAction = item.metadata?.actionType === 'reallocation';
+            const metadata = parseMetadata(item.metadata);
 
             return (
               <View
@@ -235,43 +390,53 @@ export default function ChatScreen() {
                   </Text>
 
                   {/* Action Card inside Finley's Message */}
-                  {hasAction && item.metadata?.transferDetails && (
+                  {metadata?.actionType === 'reallocation' && metadata?.transferDetails && (
                     <View style={styles.actionCard}>
                       <View style={styles.actionCardHeader}>
                         <Ionicons name="swap-horizontal" size={18} color="#00D293" />
                         <Text style={styles.actionCardTitle}>Pending Reallocation</Text>
                       </View>
                       <Text style={styles.actionCardDetail}>
-                        {item.metadata.transferDetails.sourceCategory} → {item.metadata.transferDetails.destCategory}:{' '}
-                        <Text style={styles.boldText}>${item.metadata.transferDetails.amount.toFixed(2)}</Text>
+                        {metadata.transferDetails.sourceCategory} → {metadata.transferDetails.destCategory}:{' '}
+                        <Text style={styles.boldText}>${Number(metadata.transferDetails.amount).toFixed(2)}</Text>
                       </Text>
+                      <TouchableOpacity style={styles.reviewButton} onPress={() => openProposal(metadata)}>
+                        <Text style={styles.reviewButtonText}>Review & Confirm</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
 
-                      <TouchableOpacity
-                        style={styles.reviewButton}
-                        onPress={() => {
-                          const det = item.metadata.transferDetails;
-                          
-                          // Find actual matching categories from user's state/budgets safely
-                          const cleanName = (str: string) => str.toLowerCase().replace(/[^a-z0-9]/g, '');
-                          const srcCat = categories.find(c => cleanName(c.name).includes(cleanName(det.sourceCategory)));
-                          const destCat = categories.find(c => cleanName(c.name).includes(cleanName(det.destCategory)));
+                  {metadata?.actionType === 'budget_allocation' && metadata?.budgetPlan && (
+                    <View style={styles.actionCard}>
+                      <View style={styles.actionCardHeader}>
+                        <Ionicons name="pie-chart-outline" size={18} color="#00D293" />
+                        <Text style={styles.actionCardTitle}>
+                          Proposed Monthly Budget (${Number(metadata.budgetPlan.targetIncome).toFixed(2)})
+                        </Text>
+                      </View>
+                      <Text style={styles.actionCardDetail}>
+                        {metadata.budgetPlan.allocations.length} envelopes · {metadata.budgetPlan.month}
+                      </Text>
+                      <TouchableOpacity style={styles.reviewButton} onPress={() => openProposal(metadata)}>
+                        <Text style={styles.reviewButtonText}>Review & Apply</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
 
-                          const srcBefore = Number(srcCat?.current_amount || 100.0);
-                          const destBefore = Number(destCat?.current_amount || 0.0);
-                          const transferAmount = Number(det.amount);
-
-                          setActiveTransferDetails({
-                            sourceCategory: det.sourceCategory,
-                            destCategory: det.destCategory,
-                            amount: transferAmount,
-                            sourceBefore: srcBefore,
-                            sourceAfter: srcBefore - transferAmount,
-                            destBefore: destBefore,
-                            destAfter: destBefore + transferAmount,
-                          });
-                          setIsReallocationModalVisible(true);
-                        }}
-                      >
+                  {metadata?.actionType === 'recurring_proposal' && metadata?.recurringDetails && (
+                    <View style={styles.actionCard}>
+                      <View style={styles.actionCardHeader}>
+                        <Ionicons name="repeat" size={18} color="#00D293" />
+                        <Text style={styles.actionCardTitle}>
+                          {metadata.mode === 'update' ? 'Update Recurring' : 'Create Recurring'}
+                        </Text>
+                      </View>
+                      <Text style={styles.actionCardDetail}>
+                        {metadata.recurringDetails.title}:{' '}
+                        <Text style={styles.boldText}>${Number(metadata.recurringDetails.amount).toFixed(2)}</Text>{' '}
+                        {String(metadata.recurringDetails.frequency).toLowerCase()}
+                      </Text>
+                      <TouchableOpacity style={styles.reviewButton} onPress={() => openProposal(metadata)}>
                         <Text style={styles.reviewButtonText}>Review & Confirm</Text>
                       </TouchableOpacity>
                     </View>
@@ -293,10 +458,10 @@ export default function ChatScreen() {
       )}
 
       {/* ================= INPUT FOOTER ================= */}
-      <View style={styles.inputContainer}>
+      <View style={[styles.inputContainer, { paddingBottom: isKeyboardVisible ? 10 : Math.max(insets.bottom, 12) }]}>
         <TextInput
           style={styles.input}
-          placeholder="Ask Finley to adjust budgets..."
+          placeholder="Ask AI to adjust budgets..."
           placeholderTextColor="#64748B"
           value={inputText}
           onChangeText={setInputText}
@@ -314,6 +479,8 @@ export default function ChatScreen() {
           )}
         </TouchableOpacity>
       </View>
+
+      </KeyboardAvoidingView>
 
       {/* ================= SIDE DRAWER / SESSION PANEL ================= */}
       <Modal
@@ -457,6 +624,24 @@ export default function ChatScreen() {
         onConfirm={handleConfirmReallocation}
         details={activeTransferDetails}
       />
+
+      {/* ================= BUDGET ALLOCATION MODAL ================= */}
+      <BudgetAllocationModal
+        visible={budgetModalVisible}
+        plan={budgetPlan}
+        onClose={() => setBudgetModalVisible(false)}
+        onConfirm={handleConfirmBudget}
+      />
+
+      {/* ================= RECURRING PROPOSAL MODAL ================= */}
+      <RecurringProposalModal
+        visible={recurringModalVisible}
+        proposal={recurringProposal}
+        accounts={accounts}
+        groups={groupedCategories}
+        onClose={() => setRecurringModalVisible(false)}
+        onConfirm={handleConfirmRecurring}
+      />
     </SafeAreaView>
   );
 }
@@ -465,7 +650,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#03151E' },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#1E2D3D', backgroundColor: '#0C1A25' },
   headerIconButton: { padding: 4 },
-  headerTitleContainer: { alignItems: 'center' },
+  headerTitleContainer: { alignItems: 'stretch', display: 'flex' },
   headerTitle: { fontSize: 16, fontWeight: '700', color: '#FFFFFF' },
   statusIndicatorRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
   onlineDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#00D293', marginRight: 4 },

@@ -10,7 +10,8 @@ import {
   RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { BarChart, PieChart, LineChart } from 'react-native-gifted-charts';
+import { PieChart, LineChart } from 'react-native-gifted-charts';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useUser } from '@clerk/expo';
 import { useTransactions } from '@/hooks/useTransactions';
@@ -18,15 +19,9 @@ import { useCategories } from '@/hooks/useCategories';
 import { useSavings } from '@/hooks/useSavings';
 import { useMonth } from '@/hooks/useMonth';
 import MonthSelector from '@/components/MonthSelector';
-import {
-  daysInMonthKey,
-  formatMonthKey,
-  getPhoneMonthKey,
-  getTransactionDay,
-  getTransactionMonthKey,
-  shiftMonthKey,
-} from '@/utils/month';
+import { formatMonthKey, getTransactionMonthKey, shiftMonthKey } from '@/utils/month';
 
+const API_URL = process.env.EXPO_PUBLIC_API_URL;
 const { width } = Dimensions.get('window');
 const CHART_WIDTH = width - 72; // Adjust for card padding
 
@@ -46,6 +41,37 @@ function sumByType(txs: any[], type: 'income' | 'expense') {
   return txs.filter((t) => t.type === type).reduce((sum, t) => sum + Number(t.amount || 0), 0);
 }
 
+// Planned amount of an envelope for the selected month; uninitialised months fall back to the default monthly budget
+function plannedOf(cat: any): number {
+  const v = cat.has_budget === false ? cat.default_amount ?? cat.target_amount ?? 0 : cat.target_amount ?? 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Pacing colour by share of the planned amount used
+function pacingColor(util: number): string {
+  if (util > 1) return '#EF4444'; // over budget
+  if (util >= 0.8) return '#F59E0B'; // warning
+  return '#00D293'; // healthy
+}
+
+function fmtMoney(n: number, decimals = 0): string {
+  const v = Number.isFinite(n) ? n : 0;
+  const text = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  return `${v < 0 ? '-' : ''}$${text}`;
+}
+
+function monthShort(key: string): string {
+  const [y, m] = key.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short' });
+}
+
+const MODEL_LABELS: Record<string, string> = {
+  holt_winters: 'Holt-Winters',
+  moving_average: 'Moving Avg',
+  fallback_assigned: 'Baseline',
+};
+
 // % change vs previous month; null when there is nothing to compare against
 function percentChange(current: number, previous: number): number | null {
   if (previous === 0) return current === 0 ? 0 : null;
@@ -56,7 +82,7 @@ export default function AnalyticsScreen() {
   const { user, isLoaded: isUserLoaded, isSignedIn } = useUser();
   const userId = isUserLoaded && isSignedIn ? user?.id : undefined;
 
-  const { selectedMonth, isCurrentMonth, rolloverReady, rolloverVersion } = useMonth();
+  const { selectedMonth, rolloverReady, rolloverVersion } = useMonth();
   const previousMonth = shiftMonthKey(selectedMonth, -1);
   const [refreshing, setRefreshing] = useState(false);
   const [chartMode, setChartMode] = useState<'spending' | 'budget'>('spending');
@@ -80,24 +106,81 @@ export default function AnalyticsScreen() {
     fetchSavings 
   } = useSavings(userId);
 
+  // Month the loaded envelopes belong to. Prevents showing the previous month's envelopes right after a month switch.
+  const [loadedMonth, setLoadedMonth] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // ML forecast for the selected month. `month` stamps which month the data belongs to.
+  const [forecastState, setForecastState] = useState<{ month: string; available: boolean; data: any | null } | null>(null);
+
+  const loadForecast = useCallback(
+    async (month: string) => {
+      if (!userId) return null;
+      try {
+        const response = await fetch(`${API_URL}/forecast/${userId}?month=${month}`);
+        const json = await response.json();
+        return { month, available: !!json?.available, data: json?.forecast ?? null };
+      } catch {
+        return { month, available: false, data: null };
+      }
+    },
+    [userId]
+  );
+
+  // Refresh forecasts when the tab gains focus (new transactions or budget changes elsewhere) and when the month changes
+  useFocusEffect(
+    useCallback(() => {
+      if (!userId) return;
+      let cancelled = false;
+      loadForecast(selectedMonth).then((result) => {
+        if (!cancelled && result) setForecastState(result);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [userId, selectedMonth, rolloverVersion, loadForecast])
+  );
+
+  // Collapse any open envelope when the month changes
   useEffect(() => {
-    if (userId) {
+    setExpandedId(null);
+  }, [selectedMonth]);
+
+  // Transactions and savings are not month-scoped: reload when the tab gains focus (e.g. after changes in Chat or Home)
+  useFocusEffect(
+    useCallback(() => {
+      if (!userId) return;
       fetchTx();
       fetchSavings();
-    }
-  }, [userId, fetchTx, fetchSavings, rolloverVersion]);
+    }, [userId, rolloverVersion, fetchTx, fetchSavings])
+  );
 
-  // Envelopes depend on the selected month; wait for the rollover so the current month exists
-  useEffect(() => {
-    if (userId && rolloverReady) fetchCategories();
-  }, [userId, rolloverReady, rolloverVersion, fetchCategories]);
+  // Envelopes are month-scoped: reload on focus and whenever the selected month changes
+  useFocusEffect(
+    useCallback(() => {
+      if (!userId || !rolloverReady) return;
+      let cancelled = false;
+      const month = selectedMonth;
+      fetchCategories().then(() => {
+        if (!cancelled) setLoadedMonth(month);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [userId, rolloverReady, rolloverVersion, selectedMonth, fetchCategories])
+  );
 
   const onRefresh = useCallback(async () => {
     if (!userId) return;
     setRefreshing(true);
-    await Promise.all([fetchTx(), fetchCategories(), fetchSavings()]);
-    setRefreshing(false);
-  }, [userId, fetchTx, fetchCategories, fetchSavings]);
+    try {
+      const [, , , forecastResult] = await Promise.all([fetchTx(), fetchCategories(), fetchSavings(), loadForecast(selectedMonth)]);
+      setLoadedMonth(selectedMonth);
+      if (forecastResult) setForecastState(forecastResult);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [userId, selectedMonth, fetchTx, fetchCategories, fetchSavings, loadForecast]);
 
   // Transactions of the selected month and the month before it
   const transactions = useMemo(
@@ -111,7 +194,10 @@ export default function AnalyticsScreen() {
   );
 
   const hasTransactions = transactions.length > 0;
-  const hasCategories = categories.length > 0;
+  const envelopesReady = loadedMonth === selectedMonth;
+  // Never show the previous month's envelopes while the new month is still loading
+  const scopedCategories = useMemo(() => (envelopesReady ? categories : []), [envelopesReady, categories]);
+  const hasCategories = scopedCategories.length > 0;
 
   // Month-over-month comparison
   const comparison = useMemo(() => {
@@ -119,27 +205,54 @@ export default function AnalyticsScreen() {
     const expenses = sumByType(transactions, 'expense');
     const prevIncome = sumByType(previousTransactions, 'income');
     const prevExpenses = sumByType(previousTransactions, 'expense');
+    const net = income - expenses;
     return {
       income,
       expenses,
-      net: income - expenses,
+      net,
+      savingsRate: income > 0 ? (net / income) * 100 : null,
       prevIncome,
       prevExpenses,
       prevNet: prevIncome - prevExpenses,
       incomeChange: percentChange(income, prevIncome),
       expenseChange: percentChange(expenses, prevExpenses),
-      netChange: percentChange(income - expenses, prevIncome - prevExpenses),
+      netChange: percentChange(net, prevIncome - prevExpenses),
     };
   }, [transactions, previousTransactions]);
 
-  // Spending per envelope for the selected month
-  const spendingMap = useMemo(() => {
+  // Spending per envelope for the selected month. A transaction belongs to an envelope by id,
+  // falling back to a case-insensitive name match.
+  const { spendingMap, categoryTxMap, resolveCategoryId } = useMemo(() => {
+    const ids = new Set(scopedCategories.map((c) => String(c.id)));
+    const byName = new Map(scopedCategories.map((c) => [c.name.trim().toLowerCase(), String(c.id)]));
+    const resolve = (t: any): string | null => {
+      if (t.category_id && ids.has(String(t.category_id))) return String(t.category_id);
+      const name = String(t.category_name || t.category || '').trim().toLowerCase();
+      return name ? byName.get(name) ?? null : null;
+    };
+
     const map: Record<string, number> = {};
+    const txMap: Record<string, any[]> = {};
     transactions.filter((t: any) => t.type === 'expense').forEach((t: any) => {
-      if (t.category_id) map[t.category_id] = (map[t.category_id] || 0) + Number(t.amount || 0);
+      const id = resolve(t);
+      if (!id) return;
+      map[id] = (map[id] || 0) + Number(t.amount || 0);
+      (txMap[id] = txMap[id] || []).push(t);
     });
-    return map;
-  }, [transactions]);
+    return { spendingMap: map, categoryTxMap: txMap, resolveCategoryId: resolve };
+  }, [transactions, scopedCategories]);
+
+  // Planned vs spent per envelope, most-utilised first so overspent envelopes stand out
+  const envelopeRows = useMemo(() => {
+    return scopedCategories
+      .map((cat) => {
+        const planned = plannedOf(cat);
+        const spent = spendingMap[cat.id] || 0;
+        const util = planned > 0 ? spent / planned : spent > 0 ? Infinity : 0;
+        return { id: cat.id, name: cat.name, planned, spent, util, left: planned - spent };
+      })
+      .sort((a, b) => (a.util === b.util ? b.spent - a.spent : b.util - a.util));
+  }, [scopedCategories, spendingMap]);
 
   // 1. Donut / Pie Chart Data
   const pieChartData = useMemo(() => {
@@ -148,7 +261,7 @@ export default function AnalyticsScreen() {
       const spendingByCat: Record<string, number> = {};
 
       expenses.forEach((t: any) => {
-        const catName = categories.find((c) => c.id === t.category_id)?.name || 'General';
+        const catName = scopedCategories.find((c) => String(c.id) === resolveCategoryId(t))?.name || 'General';
         spendingByCat[catName] = (spendingByCat[catName] || 0) + Number(t.amount || 0);
       });
 
@@ -164,9 +277,9 @@ export default function AnalyticsScreen() {
         : [{ value: 1, text: '0', color: '#1E2D3D', label: 'No Expenses' }];
     }
 
-    if (categories.length > 0) {
-      return categories.map((cat, i) => ({
-        value: Number(cat.target_amount) > 0 ? Number(cat.target_amount) : 1,
+    if (scopedCategories.length > 0) {
+      return scopedCategories.map((cat, i) => ({
+        value: plannedOf(cat) > 0 ? plannedOf(cat) : 1,
         text: `${cat.name}`,
         color: NEON_PALETTE[i % NEON_PALETTE.length],
         label: cat.name,
@@ -174,7 +287,7 @@ export default function AnalyticsScreen() {
     }
 
     return [{ value: 1, text: '0', color: '#1E2D3D', label: 'No Data' }];
-  }, [hasTransactions, chartMode, transactions, categories]);
+  }, [hasTransactions, chartMode, transactions, scopedCategories, resolveCategoryId]);
 
   const totalDonutValue = pieChartData.reduce(
   (sum, item) =>
@@ -182,76 +295,36 @@ export default function AnalyticsScreen() {
     0
   );
 
-  // 2. Grouped Bar Chart Data: Target vs Actual Spent
-  const groupedBarData = useMemo(() => {
-    const data: any[] = [];
-    categories.slice(0, 5).forEach((cat) => {
-      // Budget for the month = rolled-over leftover + assigned
-      const target = Number(cat.rollover || 0) + Number(cat.target_amount || 0);
-      const spent = spendingMap[cat.id] || 0;
-
-      data.push({
-        value: target,
-        label: cat.name.length > 6 ? `${cat.name.slice(0, 5)}…` : cat.name,
-        spacing: 4,
-        labelWidth: 50,
-        labelTextStyle: { color: '#64748B', fontSize: 10 },
-        frontColor: '#1E2D3D', // Muted dark for target
-      });
-      data.push({
-        value: spent,
-        frontColor: '#00D293', // Emerald for actual spent
-      });
-    });
-    return data;
-  }, [categories, spendingMap]);
-
-  // Dynamic Max Value for Bar Chart to prevent top-clipping
-  const maxBarValue = useMemo(() => {
-    const highestVal = groupedBarData.reduce((max, item) => Math.max(max, item.value), 1);
-    return Math.ceil(highestVal * 1.2); // Add 20% headroom
-  }, [groupedBarData]);
-
-  // 3. Cash Flow Trajectory: cumulative net per day of the selected month
-  const lineChartData = useMemo(() => {
-    const totalDays = daysInMonthKey(selectedMonth);
-    // For the current month, stop at today's date (phone date)
-    const lastDay = isCurrentMonth && selectedMonth === getPhoneMonthKey()
-      ? new Date().getDate()
-      : totalDays;
-
-    const netByDay: number[] = new Array(totalDays + 1).fill(0);
-    transactions.forEach((t: any) => {
-      const day = Math.min(totalDays, Math.max(1, getTransactionDay(t)));
-      const amt = Number(t.amount || 0);
-      netByDay[day] += t.type === 'income' ? amt : t.type === 'expense' ? -amt : 0;
-    });
-
-    let cumulative = 0;
-    const points = [];
-    for (let day = 1; day <= lastDay; day++) {
-      cumulative += netByDay[day];
-      points.push({
-        value: cumulative,
-        label: day === 1 || day % 7 === 1 ? `${day}` : '',
-      });
-    }
-    return points;
-  }, [transactions, selectedMonth, isCurrentMonth]);
-
-  // LineChart needs at least 2 points: prepend a zero baseline when there is only 1
-  const safeLineData = useMemo(
-    () => (lineChartData.length === 1 ? [{ value: 0, label: '' }, ...lineChartData] : lineChartData),
-    [lineChartData]
+  // Forecast view-model: only trust data stamped with the selected month
+  const forecastReady = forecastState?.month === selectedMonth;
+  const forecastOver = !!forecastState?.data && forecastState.data.totalPredictedSpend > forecastState.data.totalPlannedBudget + 0.005;
+  const forecastEnvelopes = useMemo(
+    () =>
+      ((forecastReady && forecastState?.data?.envelopes) || [])
+        .filter((e: any) => Number(e.predictedSpend) > 0 || Number(e.plannedBudget) > 0)
+        .slice(0, 8),
+    [forecastReady, forecastState]
   );
 
-  const lineSpacing = Math.max(4, (CHART_WIDTH - 60) / Math.max(1, safeLineData.length));
+  // Rolling 3-month window ending on the selected month
+  const trajectory = useMemo(() => {
+    const months = [shiftMonthKey(selectedMonth, -2), shiftMonthKey(selectedMonth, -1), selectedMonth];
+    return months.map((key) => {
+      const txs = (allTransactions as any[]).filter(
+        (t) => (t.type === 'income' || t.type === 'expense') && getTransactionMonthKey(t) === key
+      );
+      const income = sumByType(txs, 'income');
+      const expenses = sumByType(txs, 'expense');
+      return { key, label: monthShort(key), income, expenses, net: income - expenses };
+    });
+  }, [allTransactions, selectedMonth]);
 
-  // Dynamic Max Value for Line Chart to prevent top-clipping
-  const maxLineValue = useMemo(() => {
-    const highestPositive = safeLineData.reduce((max, item) => Math.max(max, item.value), 1);
-    return Math.ceil(highestPositive * 1.2); // Add 20% headroom
-  }, [safeLineData]);
+  const trajectoryEmpty = trajectory.every((m) => m.income === 0 && m.expenses === 0);
+  const trajectoryMax = useMemo(
+    () => Math.max(1, Math.ceil(Math.max(...trajectory.flatMap((m) => [m.income, m.expenses, m.net, 0])) * 1.2)),
+    [trajectory]
+  );
+  const trajectorySpacing = Math.max(20, (CHART_WIDTH - 90) / 2);
 
   if (!isUserLoaded) {
     return (
@@ -261,7 +334,8 @@ export default function AnalyticsScreen() {
     );
   }
 
-  const isInitialLoading = (isTxLoading || isCatLoading || isSavLoading) && !refreshing && !hasCategories && !hasTransactions;
+  // Full-screen spinner only for the very first load; later month switches keep the page mounted
+  const isInitialLoading = !!userId && loadedMonth === null && (isTxLoading || isCatLoading || isSavLoading);
 
   if (isInitialLoading) {
     return (
@@ -288,7 +362,7 @@ export default function AnalyticsScreen() {
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00D293" />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#00D293" colors={['#00D293']} />}
       >
         {/* Onboarding Banner for zero transactions */}
         {!hasTransactions && (
@@ -305,50 +379,51 @@ export default function AnalyticsScreen() {
           </View>
         )}
 
-        {/* 0. Month vs previous month */}
+        {/* 0. KPI summary: selected month vs previous month */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
             <View>
               <Text style={styles.cardTitle}>Monthly Overview</Text>
-              <Text style={styles.cardSubtitle}>
-                {formatMonthKey(selectedMonth, true)} vs {formatMonthKey(previousMonth, true)}
-              </Text>
+              <Text style={styles.cardSubtitle}>{formatMonthKey(selectedMonth)}</Text>
             </View>
+            {comparison.expenseChange !== null && (
+              <View
+                style={[
+                  styles.momBadge,
+                  comparison.expenseChange > 0 ? styles.momBadgeBad : comparison.expenseChange < 0 ? styles.momBadgeGood : null,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.momBadgeText,
+                    { color: comparison.expenseChange > 0 ? '#FF6B6B' : comparison.expenseChange < 0 ? '#00D293' : '#64748B' },
+                  ]}
+                >
+                  {comparison.expenseChange > 0 ? '↑' : comparison.expenseChange < 0 ? '↓' : '→'}{' '}
+                  {Math.abs(comparison.expenseChange).toFixed(0)}% vs {monthShort(previousMonth)}
+                </Text>
+              </View>
+            )}
           </View>
 
-          <View style={styles.compareRow}>
+          <View style={styles.kpiGrid}>
             {[
-              { label: 'Income', value: comparison.income, prev: comparison.prevIncome, change: comparison.incomeChange, goodWhenUp: true },
-              { label: 'Expenses', value: comparison.expenses, prev: comparison.prevExpenses, change: comparison.expenseChange, goodWhenUp: false },
-              { label: 'Net', value: comparison.net, prev: comparison.prevNet, change: comparison.netChange, goodWhenUp: true },
-            ].map((item) => {
-              const up = (item.change ?? 0) > 0;
-              const flat = item.change === 0;
-              const good = flat ? null : up === item.goodWhenUp;
-              return (
-                <View key={item.label} style={styles.compareItem}>
-                  <Text style={styles.compareLabel}>{item.label.toUpperCase()}</Text>
-                  <Text style={styles.compareValue}>${item.value.toFixed(0)}</Text>
-                  <Text style={styles.comparePrev}>was ${item.prev.toFixed(0)}</Text>
-                  {item.change === null ? (
-                    <Text style={styles.compareChangeNeutral}>new</Text>
-                  ) : (
-                    <View style={styles.compareChangeRow}>
-                      {!flat && (
-                        <Ionicons
-                          name={up ? 'arrow-up' : 'arrow-down'}
-                          size={11}
-                          color={good ? '#00D293' : '#FF6B6B'}
-                        />
-                      )}
-                      <Text style={flat ? styles.compareChangeNeutral : { color: good ? '#00D293' : '#FF6B6B', fontSize: 11, fontWeight: '700' }}>
-                        {Math.abs(item.change).toFixed(0)}%
-                      </Text>
-                    </View>
-                  )}
-                </View>
-              );
-            })}
+              { label: 'Total Income', value: fmtMoney(comparison.income), color: '#FFFFFF' },
+              { label: 'Total Spent', value: fmtMoney(comparison.expenses), color: '#FFFFFF' },
+              { label: 'Net Saved', value: fmtMoney(comparison.net), color: comparison.net < 0 ? '#FF6B6B' : '#00D293' },
+              {
+                label: 'Savings Rate',
+                value: comparison.savingsRate === null ? '—' : `${comparison.savingsRate.toFixed(0)}%`,
+                color: comparison.savingsRate !== null && comparison.savingsRate < 0 ? '#FF6B6B' : '#FFFFFF',
+              },
+            ].map((item) => (
+              <View key={item.label} style={styles.kpiTile}>
+                <Text style={styles.compareLabel}>{item.label.toUpperCase()}</Text>
+                <Text style={[styles.kpiValue, { color: item.color }]} numberOfLines={1} adjustsFontSizeToFit>
+                  {item.value}
+                </Text>
+              </View>
+            ))}
           </View>
         </View>
 
@@ -414,97 +489,223 @@ export default function AnalyticsScreen() {
           )}
         </View>
 
-        {/* 2. Grouped Bar Chart Card */}
+        {/* 2. Envelope pacing: planned vs spent */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
             <View>
-              <Text style={styles.cardTitle}>Planned vs Spent Envelopes</Text>
-              <Text style={styles.cardSubtitle}>Target allocation compared to actual spend</Text>
+              <Text style={styles.cardTitle}>Envelope Pacing</Text>
+              <Text style={styles.cardSubtitle}>Planned vs spent · tap an envelope for details</Text>
             </View>
           </View>
 
-          <View style={styles.barLegendRow}>
-            <View style={styles.legendRow}>
-              <View style={[styles.legendIndicator, { backgroundColor: '#1E2D3D' }]} />
-              <Text style={styles.legendLabel}>Target</Text>
-            </View>
-            <View style={styles.legendRow}>
-              <View style={[styles.legendIndicator, { backgroundColor: '#00D293' }]} />
-              <Text style={styles.legendLabel}>Spent</Text>
-            </View>
-          </View>
-
-          {hasCategories ? (
-            <View style={{ alignItems: 'center', marginTop: 10 }}>
-              <BarChart
-                data={groupedBarData}
-                maxValue={maxBarValue}
-                isAnimated
-                barWidth={18}
-                spacing={24}
-                roundedTop
-                roundedBottom
-                hideRules
-                xAxisThickness={1}
-                yAxisThickness={0}
-                xAxisColor="#1E2D3D"
-                yAxisTextStyle={{ color: '#64748B', fontSize: 10 }}
-                noOfSections={4}
-                width={CHART_WIDTH - 20}
-                height={180}
-              />
-            </View>
-          ) : (
+          {!envelopesReady ? (
+            <ActivityIndicator size="small" color="#00D293" style={{ marginVertical: 24 }} />
+          ) : !hasCategories ? (
             <View style={styles.emptyStateBox}>
               <Ionicons name="bar-chart-outline" size={32} color="#00D293" />
-              <Text style={styles.emptyText}>Add spending envelopes to view bar comparisons.</Text>
+              <Text style={styles.emptyText}>Add spending envelopes to see how you are pacing.</Text>
             </View>
+          ) : (
+            envelopeRows.map((row) => {
+              const color = pacingColor(row.util);
+              const fill = row.planned > 0 ? Math.min(100, row.util * 100) : row.spent > 0 ? 100 : 0;
+              const expanded = expandedId === row.id;
+              const txs = (categoryTxMap[row.id] || [])
+                .slice()
+                .sort((a: any, b: any) => String(b.transaction_date || b.created_at).localeCompare(String(a.transaction_date || a.created_at)));
+              const merchants: Record<string, { name: string; total: number; count: number }> = {};
+              txs.forEach((t: any) => {
+                const key = String(t.title || 'Untitled').trim().toLowerCase();
+                merchants[key] = merchants[key] || { name: String(t.title || 'Untitled').trim(), total: 0, count: 0 };
+                merchants[key].total += Number(t.amount || 0);
+                merchants[key].count += 1;
+              });
+              const topMerchants = Object.values(merchants).sort((a, b) => b.total - a.total).slice(0, 3);
+
+              return (
+                <View key={row.id} style={styles.pacingRow}>
+                  <TouchableOpacity activeOpacity={0.8} onPress={() => setExpandedId(expanded ? null : row.id)}>
+                    <View style={styles.pacingTop}>
+                      <Text style={styles.pacingName} numberOfLines={1}>{row.name}</Text>
+                      <Text style={styles.pacingVals}>
+                        {fmtMoney(row.spent, 2)} / {fmtMoney(row.planned, 2)}
+                      </Text>
+                      <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={14} color="#64748B" />
+                    </View>
+                    <View style={styles.track}>
+                      <View style={[styles.trackFill, { width: `${fill}%`, backgroundColor: color }]} />
+                    </View>
+                    <Text style={[styles.pacingStatus, { color }]}>
+                      {row.left >= 0 ? `${fmtMoney(row.left, 2)} left` : `${fmtMoney(Math.abs(row.left), 2)} over`}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {expanded && (
+                    <View style={styles.detailBox}>
+                      {txs.length === 0 ? (
+                        <Text style={styles.detailEmpty}>No spending recorded in {formatMonthKey(selectedMonth)}.</Text>
+                      ) : (
+                        <>
+                          <Text style={styles.detailHeading}>TOP MERCHANTS</Text>
+                          {topMerchants.map((m) => (
+                            <View key={m.name} style={styles.detailRow}>
+                              <Text style={styles.detailName} numberOfLines={1}>
+                                {m.name}{m.count > 1 ? ` ×${m.count}` : ''}
+                              </Text>
+                              <Text style={styles.detailAmt}>{fmtMoney(m.total, 2)}</Text>
+                            </View>
+                          ))}
+                          <Text style={[styles.detailHeading, { marginTop: 10 }]}>RECENT TRANSACTIONS</Text>
+                          {txs.slice(0, 5).map((t: any, i: number) => (
+                            <View key={String(t.id ?? i)} style={styles.detailRow}>
+                              <Text style={styles.detailDate}>{String(t.transaction_date || t.created_at).slice(5, 10)}</Text>
+                              <Text style={styles.detailName} numberOfLines={1}>{t.title || 'Untitled'}</Text>
+                              <Text style={styles.detailAmt}>{fmtMoney(Number(t.amount || 0), 2)}</Text>
+                            </View>
+                          ))}
+                        </>
+                      )}
+                    </View>
+                  )}
+                </View>
+              );
+            })
           )}
         </View>
 
-        {/* 3. Line / Trajectory Chart Card */}
+        {/* Projected month-end spend (ML forecast: recurring bills + Holt-Winters on variable spend) */}
+        <View style={styles.card}>
+          <View style={styles.cardHeaderRow}>
+            <View>
+              <Text style={styles.cardTitle}>Projected Month-End Spend</Text>
+              <Text style={styles.cardSubtitle}>Forecast for {formatMonthKey(selectedMonth)} · estimates, not guarantees</Text>
+            </View>
+          </View>
+
+          {!forecastReady ? (
+            <ActivityIndicator size="small" color="#00D293" style={{ marginVertical: 24 }} />
+          ) : !forecastState?.available || !forecastState.data ? (
+            <View style={styles.lineEmptyBox}>
+              <Text style={styles.emptyText}>Forecast is unavailable right now. Pull down to try again.</Text>
+            </View>
+          ) : (
+            <>
+              <View style={styles.kpiGrid}>
+                <View style={styles.kpiTile}>
+                  <Text style={styles.compareLabel}>PLANNED BUDGET</Text>
+                  <Text style={[styles.kpiValue, { color: '#FFFFFF' }]} numberOfLines={1} adjustsFontSizeToFit>
+                    {fmtMoney(forecastState.data.totalPlannedBudget)}
+                  </Text>
+                </View>
+                <View style={styles.kpiTile}>
+                  <Text style={styles.compareLabel}>PROJECTED SPEND</Text>
+                  <Text
+                    style={[styles.kpiValue, { color: forecastOver ? '#EF4444' : '#00D293' }]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                  >
+                    {fmtMoney(forecastState.data.totalPredictedSpend)}
+                  </Text>
+                </View>
+              </View>
+              <Text style={[styles.pacingStatus, { color: forecastOver ? '#EF4444' : '#00D293', marginTop: 8 }]}>
+                {forecastOver
+                  ? `${fmtMoney(forecastState.data.totalPredictedSpend - forecastState.data.totalPlannedBudget)} projected over budget`
+                  : `${fmtMoney(forecastState.data.totalPlannedBudget - forecastState.data.totalPredictedSpend)} projected under budget`}
+              </Text>
+
+              {forecastEnvelopes.map((e: any) => {
+                const over = e.projectedDelta > 0.005;
+                return (
+                  <View key={e.categoryId} style={styles.fcRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.pacingName} numberOfLines={1}>{e.categoryName}</Text>
+                      <Text style={styles.fcSub}>
+                        {fmtMoney(e.predictedSpend, 2)} projected of {fmtMoney(e.plannedBudget, 2)}
+                      </Text>
+                    </View>
+                    <View style={styles.fcTag}>
+                      <Text style={styles.fcTagText}>{MODEL_LABELS[e.modelUsed] || 'Baseline'}</Text>
+                    </View>
+                    <Text style={[styles.fcDelta, { color: over ? '#EF4444' : '#00D293' }]}>
+                      {over ? '↑' : '↓'} {fmtMoney(Math.abs(e.projectedDelta), 0)}
+                    </Text>
+                  </View>
+                );
+              })}
+            </>
+          )}
+        </View>
+
+        {/* 3. Net cash trajectory: rolling 3 months */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
             <View>
               <Text style={styles.cardTitle}>Net Cash Trajectory</Text>
-              <Text style={styles.cardSubtitle}>Cumulative net cash by day of {formatMonthKey(selectedMonth, true)}</Text>
+              <Text style={styles.cardSubtitle}>
+                Income, expenses and net · {formatMonthKey(trajectory[0].key, true)} – {formatMonthKey(trajectory[2].key, true)}
+              </Text>
             </View>
           </View>
 
-          <View style={{ alignItems: 'center', marginTop: 10 }}>
-            {safeLineData.length === 0 ? (
-              <View style={[styles.lineEmptyBox, { width: CHART_WIDTH - 20 }]}>
-                <Text style={styles.emptyText}>
-                  No spending trend data recorded for {formatMonthKey(selectedMonth)} yet.
-                </Text>
+          <View style={styles.barLegendRow}>
+            {[
+              { label: 'Income', color: '#00D293' },
+              { label: 'Expenses', color: '#FF6B6B' },
+              { label: 'Net', color: '#38BDF8' },
+            ].map((l) => (
+              <View key={l.label} style={styles.legendRow}>
+                <View style={[styles.legendIndicator, { backgroundColor: l.color }]} />
+                <Text style={styles.legendLabel}>{l.label}</Text>
               </View>
-            ) : (
-            <LineChart
-              key={`${selectedMonth}-${safeLineData.length}`}
-              data={safeLineData}
-              maxValue={maxLineValue}
-              isAnimated={false}
-              areaChart
-              curved
-              startFillColor="rgba(0, 210, 147, 0.3)"
-              endFillColor="rgba(0, 210, 147, 0.01)"
-              startOpacity={0.8}
-              endOpacity={0.1}
-              color="#00D293"
-              thickness={3}
-              hideDataPoints={!hasTransactions}
-              dataPointsColor="#00D293"
-              yAxisColor="#1E2D3D"
-              xAxisColor="#1E2D3D"
-              yAxisTextStyle={{ color: '#64748B', fontSize: 10 }}
-              xAxisLabelTextStyle={{ color: '#64748B', fontSize: 10 }}
-              width={CHART_WIDTH - 20}
-              height={160}
-              noOfSections={3}
-              spacing={lineSpacing}
-              initialSpacing={8}
-            />
-            )}
+            ))}
+          </View>
+
+          {trajectoryEmpty ? (
+            <View style={[styles.lineEmptyBox, { width: '100%' }]}>
+              <Text style={styles.emptyText}>No income or expenses recorded in these 3 months yet.</Text>
+            </View>
+          ) : (
+            <View style={{ alignItems: 'center', marginTop: 10 }}>
+              <LineChart
+                key={selectedMonth}
+                data={trajectory.map((m) => ({ value: m.income, label: m.label }))}
+                data2={trajectory.map((m) => ({ value: m.expenses }))}
+                data3={trajectory.map((m) => ({ value: m.net }))}
+                maxValue={trajectoryMax}
+                isAnimated={false}
+                curved={false}
+                color="#00D293"
+                color2="#FF6B6B"
+                color3="#38BDF8"
+                thickness={3}
+                thickness2={3}
+                thickness3={3}
+                dataPointsColor="#00D293"
+                dataPointsColor2="#FF6B6B"
+                dataPointsColor3="#38BDF8"
+                yAxisColor="#1E2D3D"
+                xAxisColor="#1E2D3D"
+                yAxisTextStyle={{ color: '#64748B', fontSize: 10 }}
+                xAxisLabelTextStyle={{ color: '#64748B', fontSize: 10 }}
+                width={CHART_WIDTH - 20}
+                height={160}
+                noOfSections={3}
+                spacing={trajectorySpacing}
+                initialSpacing={20}
+              />
+            </View>
+          )}
+
+          <View style={styles.trajTable}>
+            {trajectory.map((m) => (
+              <View key={m.key} style={styles.trajCol}>
+                <Text style={styles.trajMonth}>{m.label}</Text>
+                <Text style={[styles.trajVal, { color: '#00D293' }]}>{fmtMoney(m.income)}</Text>
+                <Text style={[styles.trajVal, { color: '#FF6B6B' }]}>{fmtMoney(m.expenses)}</Text>
+                <Text style={[styles.trajVal, { color: m.net < 0 ? '#FF6B6B' : '#38BDF8' }]}>{fmtMoney(m.net)}</Text>
+              </View>
+            ))}
           </View>
         </View>
 
@@ -800,4 +1001,95 @@ const styles = StyleSheet.create({
     backgroundColor: '#00D293',
     borderRadius: 4,
   },
+  kpiGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  kpiTile: {
+    width: '48%',
+    flexGrow: 1,
+    backgroundColor: '#121E2C',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1E2D3D',
+    padding: 12,
+  },
+  kpiValue: {
+    fontSize: 20,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  momBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
+    backgroundColor: '#121E2C',
+    borderWidth: 1,
+    borderColor: '#1E2D3D',
+    alignSelf: 'flex-start',
+  },
+  momBadgeGood: { backgroundColor: 'rgba(0, 210, 147, 0.1)', borderColor: 'rgba(0, 210, 147, 0.3)' },
+  momBadgeBad: { backgroundColor: 'rgba(255, 107, 107, 0.1)', borderColor: 'rgba(255, 107, 107, 0.3)' },
+  momBadgeText: { fontSize: 11, fontWeight: '700' },
+  pacingRow: {
+    marginTop: 14,
+  },
+  pacingTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  pacingName: { flex: 1, color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
+  pacingVals: { color: '#94A3B8', fontSize: 12 },
+  pacingStatus: { fontSize: 11, fontWeight: '700', marginTop: 4 },
+  detailBox: {
+    marginTop: 10,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: '#121E2C',
+    borderWidth: 1,
+    borderColor: '#1E2D3D',
+  },
+  detailHeading: { color: '#64748B', fontSize: 10, fontWeight: '800', letterSpacing: 0.8, marginBottom: 6 },
+  detailRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 3 },
+  detailDate: { color: '#64748B', fontSize: 11, width: 38 },
+  detailName: { flex: 1, color: '#FFFFFF', fontSize: 12 },
+  detailAmt: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
+  detailEmpty: { color: '#64748B', fontSize: 12 },
+  trajTable: {
+    flexDirection: 'row',
+    marginTop: 14,
+    gap: 8,
+  },
+  trajCol: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: '#121E2C',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1E2D3D',
+    paddingVertical: 10,
+    gap: 2,
+  },
+  trajMonth: { color: '#FFFFFF', fontSize: 12, fontWeight: '800', marginBottom: 4 },
+  trajVal: { fontSize: 12, fontWeight: '700' },
+  fcRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+  },
+  fcSub: { color: '#64748B', fontSize: 11, marginTop: 2 },
+  fcTag: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+    backgroundColor: '#121E2C',
+    borderWidth: 1,
+    borderColor: '#1E2D3D',
+  },
+  fcTagText: { color: '#38BDF8', fontSize: 10, fontWeight: '700' },
+  fcDelta: { fontSize: 12, fontWeight: '800', minWidth: 54, textAlign: 'right' },
 });

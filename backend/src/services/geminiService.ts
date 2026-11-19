@@ -462,11 +462,13 @@ ${JSON.stringify({
   savingsPlans: ctx.savingsPlans,
   recurring: ctx.recurring,
   recentTransactions: ctx.recentTransactions,
+  forecast: ctx.forecast,
 })}
 
 Envelope "months" hold assigned, spent and available (= assigned - spent) for the current month and the 6 months before it.
 "spendingSummary" holds exact monthly totals per category plus last-3-month totals and averages: use them for spending questions instead of adding transactions yourself.
 unallocatedPool = totalCash - sum(max(0, available)) - sum(savings saved_amount).
+"forecast" (may be null) holds a statistical projection of this month's spending: total predicted vs planned, the envelopes projected to finish over budget, and unusually large transactions. Present these as estimates ("projected", "likely"), never as certainties. If forecast is null, say projections are unavailable right now.
 
 ANALYTICAL Q&A: when asked about spending trends, category totals, savings progress or affordability, answer with concise bullet points
 (for example month-by-month figures, the 3-month total and the monthly average). Never invent numbers that are not in the data; if the data does not

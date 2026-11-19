@@ -12,6 +12,7 @@ import savingsRoutes from "./routes/savingsRoute.js";
 import receiptsRoute from "./routes/receiptsRoute.js";
 import chatRouter from './routes/chatRoute.js';
 import budgetsRoute from "./routes/budgetsRoute.js";
+import forecastRoute from "./routes/forecastRoute.js";
 import job from "./config/cron.js";
 
 dotenv.config();
@@ -57,6 +58,7 @@ app.use("/api/accounts", accountsRoute);
 app.use("/api/recurring", recurringRoute);
 app.use("/api/savings", savingsRoutes);
 app.use("/api/receipts", receiptsRoute);
+app.use("/api/forecast", forecastRoute);
 app.use("/api/groups", groupsRoute);
 app.use('/api/chat', chatRouter);
 app.use("/api/budgets", budgetsRoute);
