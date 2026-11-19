@@ -311,6 +311,17 @@ export function validateChatProposal(raw: any, ctx: ChatContext): ChatActionMeta
  * Chat assistant. Read-only: it receives a snapshot of the user's data, has no tools, and can only PROPOSE actions.
  * Proposals are validated against the snapshot before being returned; the app applies them through user-confirmed modals.
  */
+/** True for Gemini's "503 - model is currently experiencing high demand" (UNAVAILABLE) errors. */
+export function isModelOverloadedError(error: unknown): boolean {
+  const e = error as any;
+  if (e?.status === 503 || e?.code === 503 || e?.error?.code === 503 || e?.response?.status === 503) return true;
+  const text = `${e?.message ?? ""} ${e?.error?.message ?? ""}`;
+  return /"code"s*:s*503|503.*(unavailable|high demand)|high demand|UNAVAILABLE/i.test(text);
+}
+
+const OVERLOADED_REPLY = "Finley is experiencing high demand right now. Please try again in a moment.";
+const OVERLOAD_RETRY_DELAYS_MS = [1000, 2500];
+
 const FINANCE_WORDS =
   /budget|spen[dt]|spending|expens|income|salary|paycheck|allowance|envelope|categor|account|balance|cash|saving|saved|goal|recurring|subscription|\bbills?\b|\brent\b|transfer|reallocat|allocat|afford|transaction|purchase|bought|\bpaid\b|\bpay\b|money|dollar|\$|\d|groceries|food|transport|month|week|year|average|total|how much|overspen|unallocated|\bpool\b|deposit|withdraw|\bcost|invest|debt|loan|\bmove\b|\bcover\b/i;
 
@@ -455,7 +466,17 @@ In "reply", briefly explain the proposal and say the user can review and confirm
       history: formattedHistory,
     });
 
-    const result = await chat.sendMessage({ message: userQuery });
+    // Demand spikes are usually brief: retry a couple of times before giving up
+    let result;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        result = await chat.sendMessage({ message: userQuery });
+        break;
+      } catch (err) {
+        if (!isModelOverloadedError(err) || attempt >= OVERLOAD_RETRY_DELAYS_MS.length) throw err;
+        await new Promise((resolve) => setTimeout(resolve, OVERLOAD_RETRY_DELAYS_MS[attempt]));
+      }
+    }
     const rawText = result.text || "{}";
 
     let parsed: any = {};
@@ -473,7 +494,9 @@ In "reply", briefly explain the proposal and say the user can review and confirm
   } catch (error) {
     console.error("Error in geminiService:", error);
     return {
-      replyText: "Sorry, I encountered an error analyzing your financial data.",
+      replyText: isModelOverloadedError(error)
+        ? OVERLOADED_REPLY
+        : "Sorry, I encountered an error analyzing your financial data.",
       metadata: { actionType: "none" },
     };
   }
