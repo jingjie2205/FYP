@@ -14,10 +14,11 @@ import { useAuth, useSignUp } from "@clerk/expo";
 import { Ionicons } from "@expo/vector-icons";
 import { Link, useRouter } from "expo-router";
 import { useUsers } from "@/hooks/useUsers";
+import { getClerkErrorMessage, messageForCode } from "@/utils/clerkErrors";
 
 export default function SignUpPage() {
   // Cast as 'any' to preserve your specific SDK destructured properties
-  const { signUp, errors, fetchStatus } = useSignUp() as any; 
+  const { signUp, fetchStatus } = useSignUp() as any;
   const { isSignedIn } = useAuth();
   const router = useRouter();
   const { addUser } = useUsers();
@@ -28,95 +29,145 @@ export default function SignUpPage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [code, setCode] = useState("");
-  const [verificationError, setVerificationError] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
-  const isFetching = fetchStatus === "fetching";
+  const isBusy = loading || fetchStatus === "fetching";
 
   const handleSignUp = async () => {
-    // 1. Check if passwords match locally
+    if (isBusy) return;
+
+    const email = emailAddress.trim();
+    const name = username.trim();
+
+    // Local validation: never send empty values to Clerk
+    if (!email || !password || !name) {
+      setError(messageForCode("needs_identifier")!);
+      return;
+    }
     if (password !== confirmPassword) {
-      Alert.alert("Sign Up Failed", "Passwords do not match. Please try again.");
+      setError("Passwords do not match. Please try again.");
       return;
     }
 
+    setError("");
+    setNotice("");
+    setLoading(true);
     try {
-      // 2. Attempt to create the account with Clerk
-      await signUp.password({
-        emailAddress: emailAddress.trim(),
+      // Create the account with Clerk (errors are returned, not thrown)
+      const { error: createError } = await signUp.password({
+        emailAddress: email,
         password,
-        username: username.trim(),
+        username: name,
       });
+      if (createError) {
+        console.error("Sign Up Error:", createError);
+        setError(getClerkErrorMessage(createError, "Unable to create your account. Please try again."));
+        return;
+      }
 
-      // 3. Request the verification email
-      await signUp.verifications.sendEmailCode();
+      // Request the verification email
+      const { error: sendError } = await signUp.verifications.sendEmailCode();
+      if (sendError) {
+        console.error("Send code error:", sendError);
+        setError(getClerkErrorMessage(sendError, "Unable to send the verification code. Please try again."));
+        return;
+      }
 
-      // 4. ONLY advance the UI if both of the above network requests succeed without errors
+      // Only advance once both requests succeeded
+      setEmailAddress(email);
+      setCode("");
       setPendingVerification(true);
-      
     } catch (err: any) {
-      // 5. FAILSAFE: Force the UI to stay on the Sign-Up form if Clerk rejects the payload
-      setPendingVerification(false);
-      
-      console.error("Sign Up Error:", JSON.stringify(err, null, 2));
-      
-      // Look for Clerk's detailed 'longMessage' first, then fallback to standard messages
-      const errMsg = 
-        err.errors?.[0]?.longMessage || 
-        err.errors?.[0]?.message || 
-        err?.message || 
-        "An error occurred during sign up.";
-        
-      Alert.alert("Sign Up Failed", errMsg);
+      console.error("Sign Up Error:", err);
+      setError(getClerkErrorMessage(err, "Unable to create your account. Please try again."));
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleVerify = async () => {
+    if (isBusy) return;
+    const trimmed = code.trim();
+    if (!trimmed) return;
+
+    setError("");
+    setNotice("");
+    setLoading(true);
     try {
-      setVerificationError(false);
-      
-      await signUp.verifications.verifyEmailCode({
-        code,
-      });
+      const { error: verifyError } = await signUp.verifications.verifyEmailCode({ code: trimmed });
+      if (verifyError) {
+        console.error("Verification Error:", verifyError);
+        setError(getClerkErrorMessage(verifyError, messageForCode("form_code_incorrect")!));
+        return;
+      }
 
       if (signUp.status === "complete") {
-        await signUp.finalize({
+        const { error: finalizeError } = await signUp.finalize({
           navigate: async ({ session }: any) => {
             const clerkUserId = session?.user?.id;
-            const email = emailAddress;
 
             // Sync with PostgreSQL Database
-            if (clerkUserId && email) {
+            if (clerkUserId && emailAddress) {
               try {
                 await addUser({
                   userId: clerkUserId,
-                  email: email,
+                  email: emailAddress,
                 });
               } catch (dbErr) {
                 console.error("Database sync failed:", dbErr);
               }
             }
 
-            // Show Success Notification and force route to Login Page
             Alert.alert(
               "Account Created Successfully!",
               "Your account has been created!",
-              [
-                {
-                  text: "Confirm",
-                },
-              ],
-              { cancelable: false } // Forces the user to click the button to route properly
+              [{ text: "Confirm" }],
+              { cancelable: false }
             );
           },
         });
+        if (finalizeError) setError(getClerkErrorMessage(finalizeError, "Unable to finish creating your account. Please try again."));
       } else {
-        setVerificationError(true);
+        setError(messageForCode("form_code_incorrect")!);
       }
     } catch (err: any) {
       console.error("Verification Error:", err);
-      setVerificationError(true);
+      setError(getClerkErrorMessage(err, messageForCode("form_code_incorrect")!));
+    } finally {
+      setLoading(false);
     }
   };
+
+  const handleResend = async () => {
+    if (isBusy) return;
+    setError("");
+    setNotice("");
+    setLoading(true);
+    try {
+      const { error: sendError } = await signUp.verifications.sendEmailCode();
+      if (sendError) {
+        setError(getClerkErrorMessage(sendError, "Unable to resend the code. Please try again."));
+      } else {
+        setNotice("A new code has been sent to your email.");
+      }
+    } catch (err: any) {
+      setError(getClerkErrorMessage(err, "Unable to resend the code. Please try again."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const errorBanner = error ? (
+    <View style={styles.errorBox}>
+      <Ionicons name="alert-circle-outline" size={20} color="#FF6B6B" />
+      <Text style={styles.errorBoxText}>{error}</Text>
+      <TouchableOpacity onPress={() => setError("")} hitSlop={8}>
+        <Ionicons name="close" size={20} color="#FF6B6B" />
+      </TouchableOpacity>
+    </View>
+  ) : null;
 
   if (isSignedIn) {
     return null;
@@ -145,17 +196,10 @@ export default function SignUpPage() {
           </View>
 
           <View style={styles.formContainer}>
-            {verificationError && (
-              <View style={styles.errorBox}>
-                <Ionicons name="alert-circle-outline" size={20} color="#EF4444" />
-                <Text style={styles.errorBoxText}>Invalid verification code.</Text>
-                <TouchableOpacity onPress={() => setVerificationError(false)} style={{ marginLeft: 'auto' }}>
-                  <Ionicons name="close" size={20} color="#EF4444" />
-                </TouchableOpacity>
-              </View>
-            )}
+            {errorBanner}
+            {notice ? <Text style={styles.noticeText}>{notice}</Text> : null}
 
-            <View style={[styles.inputGroup, verificationError && styles.inputErrorBorder]}>
+            <View style={[styles.inputGroup, !!error && styles.inputErrorBorder]}>
               <Ionicons name="keypad-outline" size={20} color="#64748B" style={styles.inputIcon} />
               <TextInput
                 style={styles.input}
@@ -167,32 +211,29 @@ export default function SignUpPage() {
                 maxLength={6}
               />
             </View>
-            {errors?.fields?.code && (
-              <Text style={styles.errorText}>{errors.fields.code.message}</Text>
-            )}
-
             <TouchableOpacity
-              style={[styles.primaryButton, (!code || isFetching) && styles.buttonDisabled]}
+              style={[styles.primaryButton, (!code.trim() || isBusy) && styles.buttonDisabled]}
               onPress={handleVerify}
-              disabled={!code || isFetching}
+              disabled={!code.trim() || isBusy}
             >
-              {isFetching ? (
-                <ActivityIndicator color="#03151E" />
+              {isBusy ? (
+                <ActivityIndicator color="#070D14" />
               ) : (
                 <Text style={styles.primaryButtonText}>Verify Account</Text>
               )}
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={() => signUp.verifications.sendEmailCode()}
+              style={[styles.secondaryButton, isBusy && styles.buttonDisabled]}
+              onPress={handleResend}
+              disabled={isBusy}
             >
-              <Text style={styles.secondaryButtonText}>Resend Email Code</Text>
+              <Text style={styles.secondaryButtonText}>Resend Code</Text>
             </TouchableOpacity>
           </View>
 
           <View style={styles.footerContainer}>
-            <TouchableOpacity onPress={() => setPendingVerification(false)}>
+            <TouchableOpacity onPress={() => { setPendingVerification(false); setError(""); setNotice(""); }}>
               <Text style={styles.linkText}>Cancel & Go Back</Text>
             </TouchableOpacity>
           </View>
@@ -221,6 +262,7 @@ export default function SignUpPage() {
         </View>
 
         <View style={styles.formContainer}>
+          {errorBanner}
           <Text style={styles.inputLabel}>Username</Text>
           <View style={styles.inputGroup}>
             <Ionicons name="person-outline" size={20} color="#64748B" style={styles.inputIcon} />
@@ -235,24 +277,21 @@ export default function SignUpPage() {
           </View>
 
           <Text style={styles.inputLabel}>Email Address</Text>
-          <View style={[styles.inputGroup, errors?.fields?.emailAddress && styles.inputErrorBorder]}>
+          <View style={[styles.inputGroup]}>
             <Ionicons name="mail-outline" size={20} color="#64748B" style={styles.inputIcon} />
             <TextInput
               style={styles.input}
               autoCapitalize="none"
               value={emailAddress}
+              autoCorrect={false}
               placeholder="Enter your email"
               placeholderTextColor="#64748B"
               onChangeText={setEmailAddress}
               keyboardType="email-address"
             />
           </View>
-          {errors?.fields?.emailAddress && (
-            <Text style={styles.errorText}>{errors.fields.emailAddress.message}</Text>
-          )}
-
           <Text style={styles.inputLabel}>Password</Text>
-          <View style={[styles.inputGroup, errors?.fields?.password && styles.inputErrorBorder]}>
+          <View style={[styles.inputGroup]}>
             <Ionicons name="lock-closed-outline" size={20} color="#64748B" style={styles.inputIcon} />
             <TextInput
               style={styles.input}
@@ -263,10 +302,6 @@ export default function SignUpPage() {
               onChangeText={setPassword}
             />
           </View>
-          {errors?.fields?.password && (
-            <Text style={styles.errorText}>{errors.fields.password.message}</Text>
-          )}
-
           <Text style={styles.inputLabel}>Confirm Password</Text>
           <View style={styles.inputGroup}>
             <Ionicons name="checkmark-circle-outline" size={20} color="#64748B" style={styles.inputIcon} />
@@ -283,13 +318,13 @@ export default function SignUpPage() {
           <TouchableOpacity
             style={[
               styles.primaryButton,
-              (!username || !emailAddress || !password || !confirmPassword || isFetching) && styles.buttonDisabled,
+              (!username.trim() || !emailAddress.trim() || !password || !confirmPassword || isBusy) && styles.buttonDisabled,
             ]}
             onPress={handleSignUp}
-            disabled={!username || !emailAddress || !password || !confirmPassword || isFetching}
+            disabled={!username.trim() || !emailAddress.trim() || !password || !confirmPassword || isBusy}
           >
-            {isFetching ? (
-              <ActivityIndicator color="#03151E" />
+            {isBusy ? (
+              <ActivityIndicator color="#070D14" />
             ) : (
               <Text style={styles.primaryButtonText}>Sign Up</Text>
             )}
@@ -314,7 +349,7 @@ export default function SignUpPage() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#03151E",
+    backgroundColor: "#070D14",
   },
   scrollContent: {
     flexGrow: 1,
@@ -330,7 +365,7 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: "#0C1A25",
+    backgroundColor: "#0C1521",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 24,
@@ -364,7 +399,7 @@ const styles = StyleSheet.create({
   inputGroup: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#0C1A25",
+    backgroundColor: "#0C1521",
     borderWidth: 1,
     borderColor: "#1E2D3D",
     borderRadius: 12,
@@ -373,7 +408,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   inputErrorBorder: {
-    borderColor: "#EF4444",
+    borderColor: "#FF6B6B",
   },
   inputIcon: {
     marginRight: 12,
@@ -384,8 +419,14 @@ const styles = StyleSheet.create({
     fontSize: 15,
     height: "100%",
   },
+  noticeText: {
+    color: "#00D293",
+    fontSize: 13,
+    marginBottom: 16,
+    marginLeft: 4,
+  },
   errorText: {
-    color: "#EF4444",
+    color: "#FF6B6B",
     fontSize: 12,
     marginTop: -10,
     marginBottom: 16,
@@ -394,15 +435,17 @@ const styles = StyleSheet.create({
   errorBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(239, 68, 68, 0.1)",
+    backgroundColor: "rgba(255, 107, 107, 0.1)",
     borderWidth: 1,
-    borderColor: "rgba(239, 68, 68, 0.3)",
+    borderColor: "rgba(255, 107, 107, 0.3)",
     padding: 12,
     borderRadius: 12,
     marginBottom: 16,
   },
   errorBoxText: {
-    color: "#EF4444",
+    flex: 1,
+    marginRight: 8,
+    color: "#FF6B6B",
     fontSize: 13,
     fontWeight: "600",
     marginLeft: 8,
@@ -421,7 +464,7 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   primaryButtonText: {
-    color: "#03151E",
+    color: "#070D14",
     fontSize: 16,
     fontWeight: "700",
   },
