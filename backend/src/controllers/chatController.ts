@@ -3,6 +3,16 @@ import { Request, Response } from "express";
 import { needsFinancialContext, processChatQueryWithGemini } from "../services/geminiService.js";
 import { buildChatContext } from "../services/chatContextService.js";
 
+// jsonb normally arrives parsed, but a string-encoded value would silently hide action cards in the app
+function withParsedMetadata(row: any) {
+    if (!row) return row;
+    let metadata = row.metadata;
+    if (typeof metadata === "string") {
+        try { metadata = JSON.parse(metadata); } catch { metadata = {}; }
+    }
+    return { ...row, metadata: metadata ?? {} };
+}
+
 export async function getSessions(req: Request, res: Response) {
     try {
         const { userId } = req.params;
@@ -66,7 +76,7 @@ export async function getMessages(req: Request, res: Response) {
             WHERE session_id = ${sessionId} 
             ORDER BY created_at ASC
         `;
-        res.status(200).json(messages);
+        res.status(200).json(messages.map(withParsedMetadata));
     } catch (e) {
         console.error("Error fetching chat messages:", e);
         res.status(500).json({ error: "Internal server error" });
@@ -120,7 +130,7 @@ export async function sendMessage(req: Request, res: Response) {
                 RETURNING *
             `;
 
-            return res.status(201).json(aiMessageRows[0]);
+            return res.status(201).json(withParsedMetadata(aiMessageRows[0]));
         }
 
         const lastMsg = await sql`
@@ -129,7 +139,7 @@ export async function sendMessage(req: Request, res: Response) {
             ORDER BY created_at DESC 
             LIMIT 1
         `;
-        res.status(201).json(lastMsg[0]);
+        res.status(201).json(withParsedMetadata(lastMsg[0]));
     } catch (e: any) {
         console.error("Error sending message:", e);
         res.status(500).json({ error: "Internal server error", details: e.message });
