@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,109 +7,162 @@ import {
   TextInput,
   ScrollView,
   Modal,
-  SafeAreaView,
   Dimensions,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useUser } from '@clerk/expo';
+import { useChat } from '../../../hooks/useChat';
+import { useSavings } from '../../../hooks/useSavings';
+import { useCategories } from '../../../hooks/useCategories';
+import ReallocationModal from '../../../components/chat/ReallocationModal';
 
 const { width } = Dimensions.get('window');
 
-interface Message {
-  id: string;
-  sender: 'user' | 'assistant';
-  text: string;
-  timestamp: string;
-  actionRequired?: boolean;
-  actionCompleted?: boolean;
-}
-
-interface Session {
-  id: string;
-  name: string;
-  updatedAt: string;
-}
-
 export default function ChatScreen() {
+  const { user } = useUser();
+  const userId = user?.id;
+
+  const {
+    sessions,
+    messages,
+    isLoadingMessages,
+    isSending,
+    fetchSessions,
+    createSession,
+    fetchMessages,
+    sendMessage,
+    deleteSession,
+    setMessages,
+  } = useChat(userId);
+
+  const { savingsPlans, fetchSavings } = useSavings(userId);
+  const { categories, fetchCategories } = useCategories(userId);
+
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [sessions, setSessions] = useState<Session[]>([
-    { id: '1', name: 'Budget Reallocation', updatedAt: 'Just now' },
-    { id: '2', name: 'Monthly Expense Review', updatedAt: 'Yesterday' },
-    { id: '3', name: 'Savings Goal Planning', updatedAt: 'Oct 14' },
-  ]);
-  const [activeSessionId, setActiveSessionId] = useState('1');
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
   const [isNewSessionModalVisible, setIsNewSessionModalVisible] = useState(false);
   const [newSessionName, setNewSessionName] = useState('');
 
   const [isReallocationModalVisible, setIsReallocationModalVisible] = useState(false);
-  const [reallocationDetails] = useState({
-    sourceCategory: 'Entertainment',
-    destCategory: 'Groceries',
-    amount: 50.0,
-    sourceBefore: 120.0,
-    sourceAfter: 70.0,
-    destBefore: 35.0,
-    destAfter: 85.0,
+  const [activeTransferDetails, setActiveTransferDetails] = useState({
+    sourceCategory: '',
+    destCategory: '',
+    amount: 0,
+    sourceBefore: 100.0,
+    sourceAfter: 50.0,
+    destBefore: 20.0,
+    destAfter: 70.0,
   });
 
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 'm1',
-      sender: 'user',
-      text: 'Can you reallocate $50 from my Entertainment budget to Groceries?',
-      timestamp: '10:42 AM',
-    },
-    {
-      id: 'm2',
-      sender: 'assistant',
-      text: "I've prepared the transfer for you. Moving $50.00 will reduce your Entertainment envelope to $70.00 and increase Groceries to $85.00.\n\nPlease review and confirm the reallocation below:",
-      timestamp: '10:42 AM',
-      actionRequired: true,
-      actionCompleted: false,
-    },
-  ]);
-
   const [inputText, setInputText] = useState('');
+  const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
-  const handleConfirmReallocation = () => {
-    setIsReallocationModalVisible(false);
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.actionRequired ? { ...m, actionRequired: false, actionCompleted: true } : m
-      )
-    );
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: `m-${Date.now()}`,
-        sender: 'assistant',
-        text: '✅ Successfully transferred $50.00 from Entertainment to Groceries. Your budget envelopes have been updated.',
-        timestamp: '10:43 AM',
-      },
-    ]);
+  // Initial load
+  useEffect(() => {
+    if (userId) {
+      fetchSessions();
+      fetchSavings();
+      fetchCategories(); // Load categories on mount
+    }
+  }, [userId, fetchSessions, fetchSavings, fetchCategories]);
+
+  // Set default active session once sessions load
+  useEffect(() => {
+    if (sessions.length > 0 && !activeSessionId) {
+      setActiveSessionId(sessions[0].id);
+      fetchMessages(sessions[0].id);
+    }
+  }, [sessions, activeSessionId, fetchMessages]);
+
+  const handleSelectSession = (sessionId: string) => {
+    setActiveSessionId(sessionId);
+    fetchMessages(sessionId);
+    setIsDrawerOpen(false);
   };
 
-  const handleCreateSession = () => {
+  const handleCreateNewSession = async () => {
     if (!newSessionName.trim()) return;
-    const newSession: Session = {
-      id: Date.now().toString(),
-      name: newSessionName.trim(),
-      updatedAt: 'Just now',
-    };
-    setSessions([newSession, ...sessions]);
-    setActiveSessionId(newSession.id);
+    const newSession = await createSession(newSessionName.trim());
+    if (newSession) {
+      setActiveSessionId(newSession.id);
+      fetchMessages(newSession.id);
+    }
     setNewSessionName('');
     setIsNewSessionModalVisible(false);
     setIsDrawerOpen(false);
-    setMessages([
-      {
-        id: 'welcome',
-        sender: 'assistant',
-        text: "Hi, I'm Finley! How can I assist with your envelope budget today?",
-        timestamp: 'Just now',
-      },
-    ]);
   };
+
+  const handleSendMessage = async () => {
+    if (!inputText.trim() || !activeSessionId) return;
+
+    const userQuery = inputText.trim();
+    setInputText('');
+
+    // Send user message to backend 
+    const aiResponse = await sendMessage(activeSessionId, 'user', userQuery);
+
+    // Refresh message list for the current session
+    fetchMessages(activeSessionId);
+
+    // Check if Gemini detected a reallocation intent requiring modal confirmation
+    if (aiResponse?.metadata?.actionType === 'reallocation') {
+      const details = aiResponse.metadata.transferDetails;
+      const srcPlan = savingsPlans.find(p => p.name.toLowerCase() === details.sourceCategory.toLowerCase());
+      const destPlan = savingsPlans.find(p => p.name.toLowerCase() === details.destCategory.toLowerCase());
+
+      setActiveTransferDetails({
+        sourceCategory: details.sourceCategory,
+        destCategory: details.destCategory,
+        amount: details.amount,
+        sourceBefore: srcPlan?.saved_amount || 100.0,
+        sourceAfter: (srcPlan?.saved_amount || 100.0) - details.amount,
+        destBefore: destPlan?.saved_amount || 20.0,
+        destAfter: (destPlan?.saved_amount || 20.0) + details.amount,
+      });
+      setIsReallocationModalVisible(true);
+    }
+  };
+
+  const handleConfirmReallocation = async (details: any) => {
+    try {
+      const response = await fetch(`${API_URL}/categories/reallocate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: userId,
+          sourceName: details.sourceCategory.trim(),
+          destName: details.destCategory.trim(),
+          amount: details.amount,
+        }),
+      });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to execute budget transfer.');
+        }
+
+        setIsReallocationModalVisible(false);
+
+        if (activeSessionId) {
+          await sendMessage(
+            activeSessionId,
+            'assistant',
+            `✅ Successfully transferred $${details.amount.toFixed(2)} from ${details.sourceCategory} to ${details.destCategory}. Your budget envelopes have been updated.`
+          );
+          fetchMessages(activeSessionId);
+          fetchCategories(); // Refresh local category balances
+        }
+      } catch (error: any) {
+        setIsReallocationModalVisible(false);
+        Alert.alert('Reallocation Failed', error.message || 'Could not complete the budget transfer.');
+      }
+    };
+
+  const activeSession = sessions.find(s => s.id === activeSessionId);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -123,8 +176,10 @@ export default function ChatScreen() {
         </TouchableOpacity>
 
         <View style={styles.headerTitleContainer}>
-          <Text style={styles.headerTitle}>Budget Reallocation</Text>
+          <Text style={styles.headerTitle}>{activeSession?.session_name || 'Finley AI Chat'}</Text>
           <View style={styles.statusIndicatorRow}>
+            <View style={styles.onlineDot} />
+            <Text style={styles.statusText}>Online</Text>
           </View>
         </View>
 
@@ -137,82 +192,105 @@ export default function ChatScreen() {
       </View>
 
       {/* ================= MAIN CHAT AREA ================= */}
-      <ScrollView
-        style={styles.chatScroll}
-        contentContainerStyle={styles.chatScrollContent}
-      >
-        {messages.map((item) => (
-          <View
-            key={item.id}
-            style={[
-              styles.messageRow,
-              item.sender === 'user' ? styles.userMessageRow : styles.assistantMessageRow,
-            ]}
-          >
-            {item.sender === 'assistant' && (
-              <View style={styles.avatar}>
-                <Ionicons name="sparkles" size={16} color="#03151E" />
-              </View>
-            )}
+      {isLoadingMessages ? (
+        <View style={styles.loaderContainer}>
+          <ActivityIndicator size="large" color="#00D293" />
+        </View>
+      ) : (
+        <ScrollView
+          style={styles.chatScroll}
+          contentContainerStyle={styles.chatScrollContent}
+        >
+          {messages.map((item) => {
+            const isUser = item.role === 'user';
+            const hasAction = item.metadata?.actionType === 'reallocation';
 
-            <View
-              style={[
-                styles.messageBubble,
-                item.sender === 'user'
-                  ? styles.userBubble
-                  : styles.assistantBubble,
-              ]}
-            >
-              <Text
+            return (
+              <View
+                key={item.id}
                 style={[
-                  styles.messageText,
-                  item.sender === 'user'
-                    ? styles.userMessageText
-                    : styles.assistantMessageText,
+                  styles.messageRow,
+                  isUser ? styles.userMessageRow : styles.assistantMessageRow,
                 ]}
               >
-                {item.text}
-              </Text>
-
-              {/* Action Card inside Finley's Message */}
-              {item.actionRequired && (
-                <View style={styles.actionCard}>
-                  <View style={styles.actionCardHeader}>
-                    <Ionicons name="swap-horizontal" size={18} color="#00D293" />
-                    <Text style={styles.actionCardTitle}>Pending Reallocation</Text>
+                {!isUser && (
+                  <View style={styles.avatar}>
+                    <Ionicons name="sparkles" size={16} color="#03151E" />
                   </View>
-                  <Text style={styles.actionCardDetail}>
-                    Entertainment → Groceries: <Text style={styles.boldText}>$50.00</Text>
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.reviewButton}
-                    onPress={() => setIsReallocationModalVisible(true)}
+                )}
+
+                <View
+                  style={[
+                    styles.messageBubble,
+                    isUser ? styles.userBubble : styles.assistantBubble,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.messageText,
+                      isUser ? styles.userMessageText : styles.assistantMessageText,
+                    ]}
                   >
-                    <Text style={styles.reviewButtonText}>Review & Confirm</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
+                    {item.content}
+                  </Text>
 
-              {/* Action Completed Tag */}
-              {item.actionCompleted && (
-                <View style={styles.completedBadge}>
-                  <Ionicons name="checkmark-circle" size={16} color="#00D293" />
-                  <Text style={styles.completedBadgeText}>Transfer Confirmed</Text>
-                </View>
-              )}
+                  {/* Action Card inside Finley's Message */}
+                  {hasAction && item.metadata?.transferDetails && (
+                    <View style={styles.actionCard}>
+                      <View style={styles.actionCardHeader}>
+                        <Ionicons name="swap-horizontal" size={18} color="#00D293" />
+                        <Text style={styles.actionCardTitle}>Pending Reallocation</Text>
+                      </View>
+                      <Text style={styles.actionCardDetail}>
+                        {item.metadata.transferDetails.sourceCategory} → {item.metadata.transferDetails.destCategory}:{' '}
+                        <Text style={styles.boldText}>${item.metadata.transferDetails.amount.toFixed(2)}</Text>
+                      </Text>
 
-              <Text
-                style={[
-                  styles.timestampText,
-                  item.sender === 'user' ? styles.userTimestamp : styles.assistantTimestamp,
-                ]}
-              >
-                {item.timestamp}
-              </Text>
-            </View>
-          </View>
-        ))}
-      </ScrollView>
+                      <TouchableOpacity
+                        style={styles.reviewButton}
+                        onPress={() => {
+                          const det = item.metadata.transferDetails;
+                          
+                          // Find actual matching categories from user's state/budgets safely
+                          const cleanName = (str: string) => str.toLowerCase().replace(/[^a-z0-9]/g, '');
+                          const srcCat = categories.find(c => cleanName(c.name).includes(cleanName(det.sourceCategory)));
+                          const destCat = categories.find(c => cleanName(c.name).includes(cleanName(det.destCategory)));
+
+                          const srcBefore = Number(srcCat?.current_amount || 100.0);
+                          const destBefore = Number(destCat?.current_amount || 0.0);
+                          const transferAmount = Number(det.amount);
+
+                          setActiveTransferDetails({
+                            sourceCategory: det.sourceCategory,
+                            destCategory: det.destCategory,
+                            amount: transferAmount,
+                            sourceBefore: srcBefore,
+                            sourceAfter: srcBefore - transferAmount,
+                            destBefore: destBefore,
+                            destAfter: destBefore + transferAmount,
+                          });
+                          setIsReallocationModalVisible(true);
+                        }}
+                      >
+                        <Text style={styles.reviewButtonText}>Review & Confirm</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
+                  <Text
+                    style={[
+                      styles.timestampText,
+                      isUser ? styles.userTimestamp : styles.assistantTimestamp,
+                    ]}
+                  >
+                    {new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                </View>
+              </View>
+            );
+          })}
+        </ScrollView>
+      )}
 
       {/* ================= INPUT FOOTER ================= */}
       <View style={styles.inputContainer}>
@@ -222,9 +300,18 @@ export default function ChatScreen() {
           placeholderTextColor="#64748B"
           value={inputText}
           onChangeText={setInputText}
+          onSubmitEditing={handleSendMessage}
         />
-        <TouchableOpacity style={styles.sendButton}>
-          <Ionicons name="arrow-up-circle" size={36} color="#00D293" />
+        <TouchableOpacity 
+          style={styles.sendButton} 
+          onPress={handleSendMessage}
+          disabled={isSending}
+        >
+          {isSending ? (
+            <ActivityIndicator size="small" color="#00D293" />
+          ) : (
+            <Ionicons name="arrow-up-circle" size={36} color="#00D293" />
+          )}
         </TouchableOpacity>
       </View>
 
@@ -263,10 +350,7 @@ export default function ChatScreen() {
                     styles.sessionItem,
                     s.id === activeSessionId && styles.activeSessionItem,
                   ]}
-                  onPress={() => {
-                    setActiveSessionId(s.id);
-                    setIsDrawerOpen(false);
-                  }}
+                  onPress={() => handleSelectSession(s.id)}
                 >
                   <Ionicons
                     name="chatbubble-ellipses-outline"
@@ -281,10 +365,45 @@ export default function ChatScreen() {
                       ]}
                       numberOfLines={1}
                     >
-                      {s.name}
+                      {s.session_name}
                     </Text>
-                    <Text style={styles.sessionTime}>{s.updatedAt}</Text>
+                    <Text style={styles.sessionTime}>
+                      {new Date(s.updated_at).toLocaleDateString()}
+                    </Text>
                   </View>
+
+                  <TouchableOpacity
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      Alert.alert(
+                        'Delete Session',
+                        `Are you sure you want to delete "${s.session_name}" and all its messages?`,
+                        [
+                          { text: 'Cancel', style: 'cancel' },
+                          {
+                            text: 'Delete',
+                            style: 'destructive',
+                            onPress: async () => {
+                              const success = await deleteSession(s.id);
+                              if (success && activeSessionId === s.id) {
+                                const remaining = sessions.filter(item => item.id !== s.id);
+                                if (remaining.length > 0) {
+                                  setActiveSessionId(remaining[0].id);
+                                  fetchMessages(remaining[0].id);
+                                } else {
+                                  setActiveSessionId(null);
+                                  setMessages([]);
+                                }
+                              }
+                            },
+                          },
+                        ]
+                      );
+                    }}
+                    style={styles.deleteSessionButton}
+                  >
+                    <Ionicons name="trash-outline" size={16} color="#EF4444" />
+                  </TouchableOpacity>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -292,7 +411,7 @@ export default function ChatScreen() {
         </View>
       </Modal>
 
-      {/* ================= MODAL 1: NEW SESSION POPUP ================= */}
+      {/* ================= NEW SESSION POPUP ================= */}
       <Modal
         visible={isNewSessionModalVisible}
         transparent={true}
@@ -322,7 +441,7 @@ export default function ChatScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.confirmButton}
-                onPress={handleCreateSession}
+                onPress={handleCreateNewSession}
               >
                 <Text style={styles.confirmButtonText}>Create</Text>
               </TouchableOpacity>
@@ -331,539 +450,74 @@ export default function ChatScreen() {
         </View>
       </Modal>
 
-      {/* ================= MODAL 2: REALLOCATION TRANSACTION MODAL ================= */}
-      <Modal
+      {/* ================= REALLOCATION MODAL ================= */}
+      <ReallocationModal
         visible={isReallocationModalVisible}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setIsReallocationModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.reallocationModalCard}>
-            <View style={styles.modalHeaderRow}>
-              <View style={styles.modalHeaderTitleRow}>
-                <Ionicons name="swap-horizontal-outline" size={22} color="#00D293" />
-                <Text style={styles.modalHeaderTitle}>Confirm Transfer</Text>
-              </View>
-              <TouchableOpacity onPress={() => setIsReallocationModalVisible(false)}>
-                <Ionicons name="close" size={22} color="#64748B" />
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.reallocationPrompt}>
-              Finley has calculated the adjustments. Verify the balances before writing this transaction to the ledger:
-            </Text>
-
-            {/* Source Envelope */}
-            <View style={styles.envelopeCard}>
-              <View style={styles.envelopeCardTop}>
-                <Text style={styles.envelopeRole}>FROM</Text>
-                <Text style={styles.envelopeName}>{reallocationDetails.sourceCategory}</Text>
-              </View>
-              <View style={styles.balanceDiffRow}>
-                <Text style={styles.oldBalance}>
-                  Current: ${reallocationDetails.sourceBefore.toFixed(2)}
-                </Text>
-                <Ionicons name="arrow-forward" size={14} color="#64748B" />
-                <Text style={styles.newBalanceDeduction}>
-                  After: ${reallocationDetails.sourceAfter.toFixed(2)} (-$50.00)
-                </Text>
-              </View>
-            </View>
-
-            {/* Destination Envelope */}
-            <View style={styles.envelopeCard}>
-              <View style={styles.envelopeCardTop}>
-                <Text style={styles.envelopeRole}>TO</Text>
-                <Text style={styles.envelopeName}>{reallocationDetails.destCategory}</Text>
-              </View>
-              <View style={styles.balanceDiffRow}>
-                <Text style={styles.oldBalance}>
-                  Current: ${reallocationDetails.destBefore.toFixed(2)}
-                </Text>
-                <Ionicons name="arrow-forward" size={14} color="#64748B" />
-                <Text style={styles.newBalanceAddition}>
-                  After: ${reallocationDetails.destAfter.toFixed(2)} (+$50.00)
-                </Text>
-              </View>
-            </View>
-
-            {/* Total Transfer Pill */}
-            <View style={styles.totalPill}>
-              <Text style={styles.totalPillLabel}>Transfer Amount</Text>
-              <Text style={styles.totalPillAmount}>${reallocationDetails.amount.toFixed(2)}</Text>
-            </View>
-
-            {/* Confirmation Buttons */}
-            <View style={styles.modalButtonsRow}>
-              <TouchableOpacity
-                style={styles.modalCancelButton}
-                onPress={() => setIsReallocationModalVisible(false)}
-              >
-                <Text style={styles.modalCancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.modalConfirmButton}
-                onPress={handleConfirmReallocation}
-              >
-                <Text style={styles.modalConfirmButtonText}>Confirm & Reallocate</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+        onClose={() => setIsReallocationModalVisible(false)}
+        onConfirm={handleConfirmReallocation}
+        details={activeTransferDetails}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#03151E',
-  },
-  header: {
-    height: 60,
-    backgroundColor: '#03151E',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1E2D3D',
-  },
-  headerIconButton: {
-    padding: 6,
-  },
-  headerTitleContainer: {
-    alignItems: 'center',
-  },
-  headerTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  statusIndicatorRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 2,
-  },
-  onlineDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#00D293',
-    marginRight: 5,
-  },
-  statusText: {
-    fontSize: 11,
-    color: '#64748B',
-  },
-  chatScroll: {
-    flex: 1,
-  },
-  chatScrollContent: {
-    padding: 16,
-    paddingBottom: 24,
-  },
-  messageRow: {
-    flexDirection: 'row',
-    marginBottom: 16,
-  },
-  userMessageRow: {
-    justifyContent: 'flex-end',
-  },
-  assistantMessageRow: {
-    justifyContent: 'flex-start',
-  },
-  avatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#00D293',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 8,
-    marginTop: 2,
-  },
-  messageBubble: {
-    maxWidth: '82%',
-    borderRadius: 16,
-    padding: 14,
-  },
-  userBubble: {
-    backgroundColor: '#00D293',
-    borderTopRightRadius: 2,
-  },
-  assistantBubble: {
-    backgroundColor: '#0C1A25',
-    borderTopLeftRadius: 2,
-    borderWidth: 1,
-    borderColor: '#1E2D3D',
-  },
-  messageText: {
-    fontSize: 14.5,
-    lineHeight: 21,
-  },
-  userMessageText: {
-    color: '#03151E',
-  },
-  assistantMessageText: {
-    color: '#FFFFFF',
-  },
-  timestampText: {
-    fontSize: 10,
-    marginTop: 6,
-    alignSelf: 'flex-end',
-  },
-  userTimestamp: {
-    color: '#03151E',
-    opacity: 0.7,
-  },
-  assistantTimestamp: {
-    color: '#64748B',
-  },
-  actionCard: {
-    marginTop: 12,
-    backgroundColor: '#03151E',
-    borderRadius: 10,
-    padding: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#00D293',
-  },
-  actionCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  actionCardTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginLeft: 6,
-  },
-  actionCardDetail: {
-    fontSize: 13,
-    color: '#64748B',
-    marginBottom: 10,
-  },
-  boldText: {
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  reviewButton: {
-    backgroundColor: '#00D293',
-    paddingVertical: 8,
-    borderRadius: 6,
-    alignItems: 'center',
-  },
-  reviewButtonText: {
-    color: '#03151E',
-    fontWeight: '700',
-    fontSize: 12.5,
-  },
-  completedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 8,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    backgroundColor: 'rgba(0, 210, 147, 0.1)',
-    borderRadius: 6,
-    alignSelf: 'flex-start',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 210, 147, 0.2)',
-  },
-  completedBadgeText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#00D293',
-    marginLeft: 4,
-  },
-  inputContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: '#03151E',
-    borderTopWidth: 1,
-    borderTopColor: '#1E2D3D',
-  },
-  input: {
-    flex: 1,
-    height: 42,
-    backgroundColor: '#0C1A25',
-    borderRadius: 21,
-    paddingHorizontal: 16,
-    fontSize: 14,
-    color: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#1E2D3D',
-  },
-  sendButton: {
-    marginLeft: 10,
-  },
-  drawerBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(3, 21, 30, 0.6)',
-    flexDirection: 'row',
-  },
-  drawerContainer: {
-    width: width * 0.78,
-    backgroundColor: '#03151E',
-    height: '100%',
-    padding: 18,
-    borderRightWidth: 1,
-    borderRightColor: '#1E2D3D',
-  },
-  drawerHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-    paddingTop: 10,
-  },
-  drawerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  newChatButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#00D293',
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-    marginBottom: 16,
-    justifyContent: 'center',
-  },
-  newChatButtonText: {
-    color: '#03151E',
-    fontWeight: '700',
-    fontSize: 14,
-    marginLeft: 6,
-  },
-  sessionList: {
-    flex: 1,
-  },
-  sessionItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    marginBottom: 6,
-  },
-  activeSessionItem: {
-    backgroundColor: '#0C1A25',
-    borderWidth: 1,
-    borderColor: '#1E2D3D',
-  },
-  sessionInfo: {
-    marginLeft: 10,
-    flex: 1,
-  },
-  sessionName: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#FFFFFF',
-  },
-  activeSessionName: {
-    color: '#00D293',
-    fontWeight: '600',
-  },
-  sessionTime: {
-    fontSize: 11,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(3, 21, 30, 0.75)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  popupBox: {
-    width: '100%',
-    backgroundColor: '#0C1A25',
-    borderRadius: 14,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#1E2D3D',
-  },
-  popupTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginBottom: 6,
-  },
-  popupSubtitle: {
-    fontSize: 13,
-    color: '#64748B',
-    marginBottom: 14,
-  },
-  popupInput: {
-    height: 44,
-    borderWidth: 1,
-    borderColor: '#1E2D3D',
-    backgroundColor: '#03151E',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    fontSize: 14,
-    color: '#FFFFFF',
-    marginBottom: 18,
-  },
-  popupActionsRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-  },
-  cancelButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    marginRight: 10,
-  },
-  cancelButtonText: {
-    color: '#64748B',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  confirmButton: {
-    backgroundColor: '#00D293',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 6,
-  },
-  confirmButtonText: {
-    color: '#03151E',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  reallocationModalCard: {
-    width: '100%',
-    backgroundColor: '#0C1A25',
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#1E2D3D',
-  },
-  modalHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  modalHeaderTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  modalHeaderTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginLeft: 6,
-  },
-  reallocationPrompt: {
-    fontSize: 13,
-    color: '#64748B',
-    marginBottom: 16,
-    lineHeight: 18,
-  },
-  envelopeCard: {
-    backgroundColor: '#03151E',
-    borderWidth: 1,
-    borderColor: '#1E2D3D',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 10,
-  },
-  envelopeCardTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
-  envelopeRole: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#64748B',
-    letterSpacing: 0.5,
-  },
-  envelopeName: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  balanceDiffRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  oldBalance: {
-    fontSize: 12,
-    color: '#64748B',
-  },
-  newBalanceDeduction: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#EF4444', 
-  },
-  newBalanceAddition: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#00D293',
-  },
-  totalPill: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    backgroundColor: '#03151E',
-    borderWidth: 1,
-    borderColor: '#1E2D3D',
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-    marginTop: 6,
-    marginBottom: 18,
-  },
-  totalPillLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  totalPillAmount: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#00D293',
-  },
-  modalButtonsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  modalCancelButton: {
-    flex: 1,
-    paddingVertical: 12,
-    borderWidth: 1,
-    borderColor: '#1E2D3D',
-    backgroundColor: '#03151E',
-    borderRadius: 8,
-    alignItems: 'center',
-    marginRight: 8,
-  },
-  modalCancelButtonText: {
-    color: '#64748B',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  modalConfirmButton: {
-    flex: 1.5,
-    backgroundColor: '#00D293',
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginLeft: 8,
-  },
-  modalConfirmButtonText: {
-    color: '#03151E',
-    fontSize: 14,
-    fontWeight: '700',
-  },
+  container: { flex: 1, backgroundColor: '#03151E' },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#1E2D3D', backgroundColor: '#0C1A25' },
+  headerIconButton: { padding: 4 },
+  headerTitleContainer: { alignItems: 'center' },
+  headerTitle: { fontSize: 16, fontWeight: '700', color: '#FFFFFF' },
+  statusIndicatorRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
+  onlineDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#00D293', marginRight: 4 },
+  statusText: { fontSize: 11, color: '#64748B' },
+  loaderContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  chatScroll: { flex: 1, paddingHorizontal: 16 },
+  chatScrollContent: { paddingVertical: 16 },
+  messageRow: { flexDirection: 'row', marginVertical: 8, alignItems: 'flex-end' },
+  userMessageRow: { justifyContent: 'flex-end' },
+  assistantMessageRow: { justifyContent: 'flex-start' },
+  avatar: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#00D293', justifyContent: 'center', alignItems: 'center', marginRight: 8 },
+  messageBubble: { maxWidth: '80%', padding: 12, borderRadius: 16 },
+  userBubble: { backgroundColor: '#00D293', borderBottomRightRadius: 4 },
+  assistantBubble: { backgroundColor: '#0C1A25', borderBottomLeftRadius: 4, borderWidth: 1, borderColor: '#1E2D3D' },
+  messageText: { fontSize: 14, lineHeight: 20 },
+  userMessageText: { color: '#03151E', fontWeight: '500' },
+  assistantMessageText: { color: '#FFFFFF' },
+  actionCard: { marginTop: 10, backgroundColor: '#03151E', borderRadius: 12, padding: 10, borderWidth: 1, borderColor: '#1E2D3D' },
+  actionCardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  actionCardTitle: { fontSize: 13, fontWeight: '700', color: '#00D293', marginLeft: 6 },
+  actionCardDetail: { fontSize: 12, color: '#64748B', marginBottom: 8 },
+  boldText: { color: '#FFFFFF', fontWeight: '700' },
+  reviewButton: { backgroundColor: '#00D293', borderRadius: 8, paddingVertical: 8, alignItems: 'center' },
+  reviewButtonText: { color: '#03151E', fontSize: 12, fontWeight: '700' },
+  timestampText: { fontSize: 10, marginTop: 4, alignSelf: 'flex-end' },
+  userTimestamp: { color: '#03151E', opacity: 0.7 },
+  assistantTimestamp: { color: '#64748B' },
+  inputContainer: { flexDirection: 'row', alignItems: 'center', padding: 12, backgroundColor: '#0C1A25', borderTopWidth: 1, borderTopColor: '#1E2D3D' },
+  input: { flex: 1, backgroundColor: '#03151E', borderRadius: 20, paddingHorizontal: 16, paddingVertical: 10, color: '#FFFFFF', fontSize: 14, borderWidth: 1, borderColor: '#1E2D3D', maxHeight: 100 },
+  sendButton: { marginLeft: 8, justifyContent: 'center', alignItems: 'center' },
+  drawerBackdrop: { flex: 1, backgroundColor: 'rgba(3, 21, 30, 0.7)', justifyContent: 'flex-start' },
+  drawerContainer: { width: width * 0.75, height: '100%', backgroundColor: '#0C1A25', padding: 16, borderRightWidth: 1, borderRightColor: '#1E2D3D' },
+  drawerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  drawerTitle: { fontSize: 18, fontWeight: '700', color: '#FFFFFF' },
+  newChatButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#00D293', padding: 10, borderRadius: 8, justifyContent: 'center', marginBottom: 16 },
+  newChatButtonText: { color: '#03151E', fontWeight: '700', marginLeft: 6, fontSize: 14 },
+  sessionList: { flex: 1 },
+  sessionItem: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: 8, marginBottom: 8, backgroundColor: '#03151E' },
+  activeSessionItem: { backgroundColor: '#1E2D3D', borderWidth: 1, borderColor: '#00D293' },
+  sessionInfo: { flex: 1, marginLeft: 10 },
+  sessionName: { fontSize: 14, color: '#FFFFFF', fontWeight: '500' },
+  activeSessionName: { color: '#00D293', fontWeight: '700' },
+  sessionTime: { fontSize: 10, color: '#64748B', marginTop: 2 },
+  deleteSessionButton: { padding: 4 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(3, 21, 30, 0.8)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  popupBox: { width: '100%', backgroundColor: '#0C1A25', borderRadius: 16, padding: 20, borderWidth: 1, borderColor: '#1E2D3D' },
+  popupTitle: { fontSize: 18, fontWeight: '700', color: '#FFFFFF', marginBottom: 6 },
+  popupSubtitle: { fontSize: 13, color: '#64748B', marginBottom: 16 },
+  popupInput: { backgroundColor: '#03151E', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, color: '#FFFFFF', fontSize: 14, borderWidth: 1, borderColor: '#1E2D3D', marginBottom: 20 },
+  popupActionsRow: { flexDirection: 'row', justifyContent: 'flex-end' },
+  cancelButton: { paddingVertical: 8, paddingHorizontal: 14, marginRight: 8 },
+  cancelButtonText: { color: '#64748B', fontWeight: '600' },
+  confirmButton: { backgroundColor: '#00D293', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 8 },
+  confirmButtonText: { color: '#03151E', fontWeight: '700' },
 });
