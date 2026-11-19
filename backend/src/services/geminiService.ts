@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 import dotenv from "dotenv";
 import { ChatContext } from "./chatContextService.js";
 import { isValidDateString, normalizeFrequency } from "./recurringService.js";
@@ -395,6 +395,47 @@ export function needsFinancialContext(userQuery: string, history: Array<{ role: 
   return previous.some((h) => FINANCE_WORDS.test(h.content || ""));
 }
 
+const PRIMARY_CHAT_MODEL = "gemini-4-hydrogen";
+const FALLBACK_CHAT_MODEL = "gemini-3.5-flash-lite";
+
+/**
+ * Fallback for unexpected non-pure-JSON output: returns the last top-level {...} block that parses,
+ * so self-correction text with several JSON drafts resolves to the final one.
+ */
+export function extractLastJsonObject(text: string): any | null {
+  const candidates: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}" && depth > 0) {
+      depth--;
+      if (depth === 0 && start >= 0) candidates.push(text.slice(start, i + 1));
+    }
+  }
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    try {
+      const value = JSON.parse(candidates[i]);
+      if (value && typeof value === "object") return value;
+    } catch {
+      /* try the previous block */
+    }
+  }
+  return null;
+}
+
 export async function processChatQueryWithGemini(
   userQuery: string,
   history: Array<{ role: string; content: string }>,
@@ -407,7 +448,7 @@ export async function processChatQueryWithGemini(
       ? `You are Finley, a friendly personal finance assistant inside a zero-based budgeting app. Today's date is ${today}.
 No financial data is loaded for this message. Reply briefly and conversationally. Never state or guess any of the user's balances, spending or budgets.
 If the user is asking about their own money, budget, spending, savings or recurring payments, ask them to say what they want to look at (for example "how much did I spend on groceries last month?") so you can check it.
-Return JSON {"reply": string, "metadata": null}. Never put JSON or code blocks in "reply".`
+Leave metadata empty. Never put JSON or code blocks in the reply.`
       : `You are Finley, a friendly personal finance assistant inside a zero-based budgeting app.
 Today's date is ${ctx.today}. The current month is ${ctx.currentMonth}. All money is in dollars.
 You have READ-ONLY access to the user's data (JSON below). You cannot change anything yourself.
@@ -428,21 +469,16 @@ Envelope "months" hold assigned, spent and available (= assigned - spent) for th
 "spendingSummary" holds exact monthly totals per category plus last-3-month totals and averages: use them for spending questions instead of adding transactions yourself.
 unallocatedPool = totalCash - sum(max(0, available)) - sum(savings saved_amount).
 
-OUTPUT: return JSON {"reply": string, "metadata": object | null}.
-
 ANALYTICAL Q&A: when asked about spending trends, category totals, savings progress or affordability, answer with concise bullet points
-(e.g. month-by-month figures, the 3-month total and the monthly average). NEVER invent numbers that are not in the data; if the data does not
-cover the question, say so. Set "metadata" to null.
+(for example month-by-month figures, the 3-month total and the monthly average). Never invent numbers that are not in the data; if the data does not
+cover the question, say so. Leave metadata empty.
 
-ACTION PROPOSALS (only when the user asks for one; otherwise metadata is null). Use ids exactly as they appear in the data. Never invent ids.
-1. Move money between two existing envelopes -> metadata = {"actionType":"reallocation","transferDetails":{"sourceCategoryId","sourceCategory","destCategoryId","destCategory","amount"}}
-   The amount must not exceed the source envelope's assigned amount this month.
-2. Build or adjust a monthly budget from an income amount (e.g. "make a budget with 1500 income") using the user's EXISTING envelopes ->
-   {"actionType":"budget_allocation","budgetPlan":{"targetIncome":number,"month":"YYYY-MM","allocations":[{"categoryId","categoryName","groupName","currentAssigned","proposedAssigned"}]}}
-   The total of all proposedAssigned must never exceed targetIncome. Use the month ${ctx.currentMonth} unless told otherwise. Base the split on the user's past spending and current assignments.
-3. Create or edit a recurring payment -> {"actionType":"recurring_proposal","mode":"create"|"update","recurringDetails":{"recurringId":string|null,"title","amount","type":"expense"|"income","accountId":string|null,"accountName":string|null,"categoryId":string|null,"categoryName":string|null,"frequency":"Weekly"|"Monthly"|"Yearly","nextDate":"YYYY-MM-DD"}}
-   For "update", recurringId must be an existing recurring id from the data. Use null for an account or envelope you are unsure about.
-In "reply", briefly explain the proposal and say the user can review and confirm it below. Never put JSON or code blocks in "reply". Nothing is applied until the user confirms.`;
+ACTION PROPOSALS (only when the user asks for one; otherwise leave metadata empty). Copy ids exactly as they appear in the data and never invent ids.
+Work out the numbers first, then give only the final answer: no corrections, drafts or self-notes in the reply.
+- Reallocation (moving money between two existing envelopes): set actionType to reallocation and fill transferDetails with the source and destination envelope ids and names and the amount. The amount must not exceed the source envelope's assigned amount this month.
+- Budget plan (splitting an income amount across the user's EXISTING envelopes): set actionType to budget_allocation and fill budgetPlan with the target income, the month (use ${ctx.currentMonth} unless told otherwise) and one allocation per envelope with its current and proposed assigned amounts. The proposed amounts must never add up to more than the target income. Base the split on past spending and current assignments.
+- Recurring payment (create or edit): set actionType to recurring_proposal, set mode to create or update, and fill recurringDetails. For update, recurringId must be an existing recurring id from the data. Use null for an account or envelope you are unsure about. Frequency is Weekly, Monthly or Yearly.
+In the reply, briefly explain the proposal and say the user can review and confirm it below. Never put JSON or code blocks in the reply. Nothing is applied until the user confirms.`;
 
     const formattedHistory = history.slice(-11, -1).map((h) => ({
       role: h.role === "assistant" ? "model" : "user",
@@ -450,97 +486,114 @@ In "reply", briefly explain the proposal and say the user can review and confirm
     }));
 
     const nullableStr = { type: Type.STRING, nullable: true };
-    const chat = ai.chats.create({
-      model: "gemini-3.5-flash-lite",
-      config: {
-        systemInstruction,
-        temperature: 0.1,
-        responseMimeType: "application/json",
-        responseSchema: {
+    const responseSchema = {
+      type: Type.OBJECT,
+      properties: {
+        reply: { type: Type.STRING },
+        metadata: {
           type: Type.OBJECT,
+          nullable: true,
           properties: {
-            reply: { type: Type.STRING },
-            metadata: {
+            actionType: { type: Type.STRING, enum: ["none", "reallocation", "budget_allocation", "recurring_proposal"] },
+            mode: { type: Type.STRING, nullable: true, enum: ["create", "update"] },
+            transferDetails: {
               type: Type.OBJECT,
               nullable: true,
               properties: {
-                actionType: { type: Type.STRING, enum: ["reallocation", "budget_allocation", "recurring_proposal"] },
-                mode: { type: Type.STRING, nullable: true, enum: ["create", "update"] },
-                transferDetails: {
-                  type: Type.OBJECT,
-                  nullable: true,
-                  properties: {
-                    sourceCategoryId: { type: Type.STRING },
-                    sourceCategory: { type: Type.STRING },
-                    destCategoryId: { type: Type.STRING },
-                    destCategory: { type: Type.STRING },
-                    amount: { type: Type.NUMBER },
-                  },
-                },
-                budgetPlan: {
-                  type: Type.OBJECT,
-                  nullable: true,
-                  properties: {
-                    targetIncome: { type: Type.NUMBER },
-                    month: { type: Type.STRING },
-                    allocations: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          categoryId: { type: Type.STRING },
-                          categoryName: { type: Type.STRING },
-                          groupName: { type: Type.STRING },
-                          currentAssigned: { type: Type.NUMBER },
-                          proposedAssigned: { type: Type.NUMBER },
-                        },
-                      },
+                sourceCategoryId: { type: Type.STRING },
+                sourceCategory: { type: Type.STRING },
+                destCategoryId: { type: Type.STRING },
+                destCategory: { type: Type.STRING },
+                amount: { type: Type.NUMBER },
+              },
+            },
+            budgetPlan: {
+              type: Type.OBJECT,
+              nullable: true,
+              properties: {
+                targetIncome: { type: Type.NUMBER },
+                month: { type: Type.STRING },
+                allocations: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      categoryId: { type: Type.STRING },
+                      categoryName: { type: Type.STRING },
+                      groupName: { type: Type.STRING },
+                      currentAssigned: { type: Type.NUMBER },
+                      proposedAssigned: { type: Type.NUMBER },
                     },
-                  },
-                },
-                recurringDetails: {
-                  type: Type.OBJECT,
-                  nullable: true,
-                  properties: {
-                    recurringId: nullableStr,
-                    title: { type: Type.STRING },
-                    amount: { type: Type.NUMBER },
-                    type: { type: Type.STRING, enum: ["expense", "income"] },
-                    accountId: nullableStr,
-                    accountName: nullableStr,
-                    categoryId: nullableStr,
-                    categoryName: nullableStr,
-                    frequency: { type: Type.STRING },
-                    nextDate: { type: Type.STRING },
                   },
                 },
               },
             },
+            recurringDetails: {
+              type: Type.OBJECT,
+              nullable: true,
+              properties: {
+                recurringId: nullableStr,
+                title: { type: Type.STRING },
+                amount: { type: Type.NUMBER },
+                type: { type: Type.STRING, enum: ["expense", "income"] },
+                accountId: nullableStr,
+                accountName: nullableStr,
+                categoryId: nullableStr,
+                categoryName: nullableStr,
+                frequency: { type: Type.STRING },
+                nextDate: { type: Type.STRING },
+              },
+            },
           },
-          required: ["reply"],
         },
       },
-      history: formattedHistory,
-    });
+      required: ["reply"],
+    };
 
-    // Demand spikes are usually brief: retry a couple of times before giving up
-    let result;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        result = await chat.sendMessage({ message: userQuery });
-        break;
-      } catch (err) {
-        if (!isModelOverloadedError(err) || attempt >= OVERLOAD_RETRY_DELAYS_MS.length) throw err;
-        await new Promise((resolve) => setTimeout(resolve, OVERLOAD_RETRY_DELAYS_MS[attempt]));
+    // Both models are forced to return one JSON object that matches responseSchema.
+    // Thinking is controlled with thinkingLevel only (thinkingBudget is rejected by Gemini 4 models).
+    const askModel = (model: string, withThinking: boolean) =>
+      ai.chats
+        .create({
+          model,
+          config: {
+            systemInstruction,
+            temperature: 0.1,
+            responseMimeType: "application/json",
+            responseSchema,
+            ...(withThinking ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
+          },
+          history: formattedHistory,
+        })
+        .sendMessage({ message: userQuery });
+
+    // Demand spikes are usually brief: retry the primary a couple of times, then fall back to the lighter model
+    const callWithRetry = async (model: string, withThinking: boolean) => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await askModel(model, withThinking);
+        } catch (err) {
+          if (!isModelOverloadedError(err) || attempt >= OVERLOAD_RETRY_DELAYS_MS.length) throw err;
+          await new Promise((resolve) => setTimeout(resolve, OVERLOAD_RETRY_DELAYS_MS[attempt]));
+        }
       }
+    };
+
+    let result;
+    try {
+      result = await callWithRetry(PRIMARY_CHAT_MODEL, true);
+    } catch (primaryErr) {
+      console.warn("[chat] primary model failed, using fallback:", (primaryErr as any)?.message ?? primaryErr);
+      result = await callWithRetry(FALLBACK_CHAT_MODEL, false);
     }
     const rawText = result.text || "{}";
 
-    let parsed: any = {};
+    let parsed: any;
     try {
-      parsed = JSON.parse(rawText);
+      parsed = JSON.parse(rawText.trim());
     } catch {
-      parsed = { reply: rawText.replace(/```json[\s\S]*?```/g, "").trim() };
+      // Unexpected fenced / chatty output: use the LAST valid JSON object, not first-{-to-last-}
+      parsed = extractLastJsonObject(rawText) ?? { reply: rawText.replace(/```json[\s\S]*?```/g, "").trim() };
     }
 
     const replyText = String(parsed.reply || "I've looked at your budget.")
