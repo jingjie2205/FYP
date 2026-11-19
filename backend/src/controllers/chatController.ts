@@ -1,6 +1,6 @@
 import { sql } from "../config/db.js";
 import { Request, Response } from "express";
-import { processChatQueryWithGemini } from "../services/geminiService.js";
+import { needsFinancialContext, processChatQueryWithGemini } from "../services/geminiService.js";
 import { buildChatContext } from "../services/chatContextService.js";
 
 export async function getSessions(req: Request, res: Response) {
@@ -97,8 +97,6 @@ export async function sendMessage(req: Request, res: Response) {
                 return res.status(404).json({ error: "Chat session not found" });
             }
 
-            const context = await buildChatContext(userId, today);
-
             // Fetch session message history for conversation memory
             const historyRows = await sql`
                 SELECT role, content FROM chat_messages 
@@ -106,11 +104,14 @@ export async function sendMessage(req: Request, res: Response) {
                 ORDER BY created_at ASC
             `;
 
-            const aiResult = await processChatQueryWithGemini(
-                content,
-                historyRows.map(r => ({ role: r.role, content: r.content })),
-                context
-            );
+            const history = historyRows.map(r => ({ role: r.role, content: r.content }));
+
+            // Only load the financial snapshot when the conversation is actually about money
+            const context = needsFinancialContext(content, history)
+                ? await buildChatContext(userId, today)
+                : null;
+
+            const aiResult = await processChatQueryWithGemini(content, history, context, today);
 
             // Save assistant reply (metadata already validated against the user's real rows)
             const aiMessageRows = await sql`
