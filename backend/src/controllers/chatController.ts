@@ -1,7 +1,7 @@
 import { sql } from "../config/db.js";
 import { Request, Response } from "express";
 import { processChatQueryWithGemini } from "../services/geminiService.js";
-import { getUserFinancialData } from "../services/accountService.js"; // Importing the service function
+import { buildChatContext } from "../services/chatContextService.js";
 
 export async function getSessions(req: Request, res: Response) {
     try {
@@ -76,7 +76,7 @@ export async function getMessages(req: Request, res: Response) {
 export async function sendMessage(req: Request, res: Response) {
     try {
         const { sessionId } = req.params;
-        const { role, content, metadata } = req.body;
+        const { role, content, metadata, today } = req.body;
 
         if (!sessionId || !role || !content) {
             return res.status(400).json({ error: "Missing required fields - sessionId, role, content" });
@@ -89,50 +89,15 @@ export async function sendMessage(req: Request, res: Response) {
             VALUES (${sessionId}, ${role}, ${content}, ${metadataJson}::jsonb)
         `;
 
-        // If user message, fetch context via accountService and trigger Gemini AI
+        // If user message, build a READ-ONLY snapshot of the user's finances and ask Gemini
         if (role === 'user') {
             const sessionRows = await sql`SELECT user_id FROM chat_sessions WHERE id = ${sessionId}`;
             const userId = sessionRows[0]?.user_id;
-
-            let comprehensiveBudgetContext: any = {
-                accounts: [],
-                savingsPlans: [],
-                categories: [],
-                categoryGroups: [],
-                recurringTransactions: [],
-                recentTransactions: []
-            };
-
-            if (userId && typeof getUserFinancialData === 'function') {
-                // Fetch comprehensive user financial context using the service
-                comprehensiveBudgetContext = await getUserFinancialData(userId);
-            } else if (userId) {
-                // Fallback concurrent query set if service signature differs slightly
-                const [
-                    accounts,
-                    savingsPlans,
-                    categories,
-                    categoryGroups,
-                    recurringTransactions,
-                    recentTransactions
-                ] = await Promise.all([
-                    sql`SELECT * FROM accounts WHERE user_id = ${userId} ORDER BY created_at DESC`,
-                    sql`SELECT name, saved_amount as "currentAmount", target_amount as "targetAmount" FROM savings_plans WHERE user_id = ${userId}`,
-                    sql`SELECT name, budget_limit, spent_amount FROM categories WHERE user_id = ${userId}`,
-                    sql`SELECT name FROM category_groups WHERE user_id = ${userId}`,
-                    sql`SELECT rt.title, rt.amount, rt.frequency, c.name as category FROM recurring_transactions rt LEFT JOIN categories c ON rt.category_id = c.id WHERE rt.user_id = ${userId}`,
-                    sql`SELECT t.title, t.amount, t.date, c.name as category FROM transactions t LEFT JOIN categories c ON t.category_id = c.id WHERE t.user_id = ${userId} ORDER BY t.date DESC LIMIT 15`
-                ]);
-
-                comprehensiveBudgetContext = {
-                    accounts,
-                    savingsPlans,
-                    categories,
-                    categoryGroups,
-                    recurringTransactions,
-                    recentTransactions
-                };
+            if (!userId) {
+                return res.status(404).json({ error: "Chat session not found" });
             }
+
+            const context = await buildChatContext(userId, today);
 
             // Fetch session message history for conversation memory
             const historyRows = await sql`
@@ -141,21 +106,16 @@ export async function sendMessage(req: Request, res: Response) {
                 ORDER BY created_at ASC
             `;
 
-            // Call Gemini service
             const aiResult = await processChatQueryWithGemini(
                 content,
                 historyRows.map(r => ({ role: r.role, content: r.content })),
-                comprehensiveBudgetContext
+                context
             );
 
-            const aiMetadata = aiResult.actionType === 'reallocation' 
-                ? { actionType: 'reallocation', transferDetails: aiResult.transferDetails }
-                : { actionType: 'none' };
-
-            // Save assistant reply
+            // Save assistant reply (metadata already validated against the user's real rows)
             const aiMessageRows = await sql`
                 INSERT INTO chat_messages (session_id, role, content, metadata)
-                VALUES (${sessionId}, 'assistant', ${aiResult.replyText}, ${JSON.stringify(aiMetadata)}::jsonb)
+                VALUES (${sessionId}, 'assistant', ${aiResult.replyText}, ${JSON.stringify(aiResult.metadata)}::jsonb)
                 RETURNING *
             `;
 
