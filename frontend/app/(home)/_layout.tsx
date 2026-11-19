@@ -1,9 +1,32 @@
 import { Tabs } from "expo-router";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { View, StyleSheet, Platform } from "react-native";
+import { useEffect, useState } from "react";
+import { useUser } from "@clerk/expo";
+import { MonthProvider } from "@/hooks/useMonth";
+import { useUsers } from "@/hooks/useUsers";
 
 export default function HomeLayout() {
+  const { user, isLoaded, isSignedIn } = useUser();
+  const userId = isLoaded && isSignedIn ? user?.id : undefined;
+  const email = user?.primaryEmailAddress?.emailAddress || user?.emailAddresses?.[0]?.emailAddress;
+
+  // Make sure the signed-in Clerk user exists in the `users` table before anything
+  // that references it (accounts, categories, rollover) is written.
+  const { ensureUser } = useUsers();
+  const [syncedUserId, setSyncedUserId] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!userId || !email || syncedUserId === userId) return;
+    let cancelled = false;
+    ensureUser({ userId, email }).then((ok) => {
+      if (!cancelled && ok) setSyncedUserId(userId);
+    });
+    return () => { cancelled = true; };
+  }, [userId, email, syncedUserId, ensureUser]);
+
   return (
+    <MonthProvider userId={syncedUserId}>
     <Tabs
       screenOptions={{
         headerShown: false,
@@ -102,6 +125,7 @@ export default function HomeLayout() {
         }}
       />
     </Tabs>
+    </MonthProvider>
   );
 }
 

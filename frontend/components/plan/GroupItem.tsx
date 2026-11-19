@@ -8,6 +8,8 @@ interface Props {
   group: GroupedCategory;
   isCollapsed: boolean;
   spendingMap: Record<string, number>;
+  /** Past months: hide add / edit / cover actions */
+  readOnly?: boolean;
   onToggle: (id: string) => void;
   onAddCategory: (id: string) => void;
   onEditGroup: (group: GroupedCategory) => void;
@@ -16,15 +18,16 @@ interface Props {
 }
 
 export default function GroupItem({ 
-  group, isCollapsed, spendingMap, onToggle, onAddCategory, onEditGroup, onEditCategory, onCoverCategory
+  group, isCollapsed, spendingMap, readOnly = false, onToggle, onAddCategory, onEditGroup, onEditCategory, onCoverCategory
 }: Props) {
   
-  const groupTargetTotal = group.categories.reduce((sum, cat) => sum + Number(cat.target_amount || 0), 0);
+  // Total budget for the month = carried-over leftover + assigned
+  const groupTargetTotal = group.categories.reduce((sum, cat) => sum + Number(cat.rollover || 0) + Number(cat.target_amount || 0), 0);
   
   const groupAvailableTotal = group.categories.reduce((sum, cat) => {
-    const target = Number(cat.target_amount || 0);
+    const budget = Number(cat.rollover || 0) + Number(cat.target_amount || 0);
     const spent = spendingMap[cat.id] || 0;
-    return sum + (target - spent);
+    return sum + (budget - spent);
   }, 0);
 
   const isGroupOverspent = groupAvailableTotal < 0;
@@ -47,12 +50,16 @@ export default function GroupItem({
               ${groupAvailableTotal.toFixed(0)}
             </Text> /${groupTargetTotal.toFixed(0)}
           </Text>
-          <TouchableOpacity style={styles.groupActionBtn} onPress={() => onAddCategory(group.id)}>
-            <Ionicons name="add" size={16} color={isGroupOverspent ? "#FF6B6B" : "#00D293"} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.groupActionBtn} onPress={() => onEditGroup(group)}>
-            <Ionicons name="create-outline" size={16} color="#64748B" />
-          </TouchableOpacity>
+          {!readOnly && (
+            <>
+              <TouchableOpacity style={styles.groupActionBtn} onPress={() => onAddCategory(group.id)}>
+                <Ionicons name="add" size={16} color={isGroupOverspent ? "#FF6B6B" : "#00D293"} />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.groupActionBtn} onPress={() => onEditGroup(group)}>
+                <Ionicons name="create-outline" size={16} color="#64748B" />
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       </TouchableOpacity>
 
@@ -66,8 +73,8 @@ export default function GroupItem({
                 key={cat.id} 
                 category={cat} 
                 spentAmount={spendingMap[cat.id] || 0}
-                onEdit={onEditCategory} 
-                onCover={onCoverCategory}
+                onEdit={readOnly ? undefined : onEditCategory} 
+                onCover={readOnly ? undefined : onCoverCategory}
               />
             ))
           )}

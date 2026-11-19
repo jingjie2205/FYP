@@ -16,6 +16,16 @@ import { useUser } from '@clerk/expo';
 import { useTransactions } from '@/hooks/useTransactions';
 import { useCategories } from '@/hooks/useCategories';
 import { useSavings } from '@/hooks/useSavings';
+import { useMonth } from '@/hooks/useMonth';
+import MonthSelector from '@/components/MonthSelector';
+import {
+  daysInMonthKey,
+  formatMonthKey,
+  getPhoneMonthKey,
+  getTransactionDay,
+  getTransactionMonthKey,
+  shiftMonthKey,
+} from '@/utils/month';
 
 const { width } = Dimensions.get('window');
 const CHART_WIDTH = width - 72; // Adjust for card padding
@@ -32,19 +42,28 @@ const NEON_PALETTE = [
   '#14B8A6'  // Teal
 ];
 
-type TimeRange = '1M' | '3M' | '6M' | 'ALL';
+function sumByType(txs: any[], type: 'income' | 'expense') {
+  return txs.filter((t) => t.type === type).reduce((sum, t) => sum + Number(t.amount || 0), 0);
+}
+
+// % change vs previous month; null when there is nothing to compare against
+function percentChange(current: number, previous: number): number | null {
+  if (previous === 0) return current === 0 ? 0 : null;
+  return ((current - previous) / Math.abs(previous)) * 100;
+}
 
 export default function AnalyticsScreen() {
   const { user, isLoaded: isUserLoaded, isSignedIn } = useUser();
   const userId = isUserLoaded && isSignedIn ? user?.id : undefined;
 
-  const [timeRange, setTimeRange] = useState<TimeRange>('1M');
+  const { selectedMonth, isCurrentMonth, rolloverReady, rolloverVersion } = useMonth();
+  const previousMonth = shiftMonthKey(selectedMonth, -1);
   const [refreshing, setRefreshing] = useState(false);
   const [chartMode, setChartMode] = useState<'spending' | 'budget'>('spending');
 
   // Custom Hooks
   const { 
-    transactions = [], 
+    transactions: allTransactions = [], 
     isLoading: isTxLoading, 
     loadData: fetchTx 
   } = useTransactions(userId);
@@ -53,7 +72,7 @@ export default function AnalyticsScreen() {
     categories = [], 
     isLoading: isCatLoading, 
     fetchCategories 
-  } = useCategories(userId);
+  } = useCategories(userId, selectedMonth);
 
   const { 
     savingsPlans = [], 
@@ -64,10 +83,14 @@ export default function AnalyticsScreen() {
   useEffect(() => {
     if (userId) {
       fetchTx();
-      fetchCategories();
       fetchSavings();
     }
-  }, [userId, fetchTx, fetchCategories, fetchSavings]);
+  }, [userId, fetchTx, fetchSavings, rolloverVersion]);
+
+  // Envelopes depend on the selected month; wait for the rollover so the current month exists
+  useEffect(() => {
+    if (userId && rolloverReady) fetchCategories();
+  }, [userId, rolloverReady, rolloverVersion, fetchCategories]);
 
   const onRefresh = useCallback(async () => {
     if (!userId) return;
@@ -76,8 +99,47 @@ export default function AnalyticsScreen() {
     setRefreshing(false);
   }, [userId, fetchTx, fetchCategories, fetchSavings]);
 
+  // Transactions of the selected month and the month before it
+  const transactions = useMemo(
+    // Only real income/expense: savings moves are not spending or earning
+    () => (allTransactions as any[]).filter((t) => (t.type === 'income' || t.type === 'expense') && getTransactionMonthKey(t) === selectedMonth),
+    [allTransactions, selectedMonth]
+  );
+  const previousTransactions = useMemo(
+    () => (allTransactions as any[]).filter((t) => (t.type === 'income' || t.type === 'expense') && getTransactionMonthKey(t) === previousMonth),
+    [allTransactions, previousMonth]
+  );
+
   const hasTransactions = transactions.length > 0;
   const hasCategories = categories.length > 0;
+
+  // Month-over-month comparison
+  const comparison = useMemo(() => {
+    const income = sumByType(transactions, 'income');
+    const expenses = sumByType(transactions, 'expense');
+    const prevIncome = sumByType(previousTransactions, 'income');
+    const prevExpenses = sumByType(previousTransactions, 'expense');
+    return {
+      income,
+      expenses,
+      net: income - expenses,
+      prevIncome,
+      prevExpenses,
+      prevNet: prevIncome - prevExpenses,
+      incomeChange: percentChange(income, prevIncome),
+      expenseChange: percentChange(expenses, prevExpenses),
+      netChange: percentChange(income - expenses, prevIncome - prevExpenses),
+    };
+  }, [transactions, previousTransactions]);
+
+  // Spending per envelope for the selected month
+  const spendingMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    transactions.filter((t: any) => t.type === 'expense').forEach((t: any) => {
+      if (t.category_id) map[t.category_id] = (map[t.category_id] || 0) + Number(t.amount || 0);
+    });
+    return map;
+  }, [transactions]);
 
   // 1. Donut / Pie Chart Data
   const pieChartData = useMemo(() => {
@@ -124,8 +186,9 @@ export default function AnalyticsScreen() {
   const groupedBarData = useMemo(() => {
     const data: any[] = [];
     categories.slice(0, 5).forEach((cat) => {
-      const target = Number(cat.target_amount || 0);
-      const spent = Math.max(0, target - Number(cat.current_amount || 0));
+      // Budget for the month = rolled-over leftover + assigned
+      const target = Number(cat.rollover || 0) + Number(cat.target_amount || 0);
+      const spent = spendingMap[cat.id] || 0;
 
       data.push({
         value: target,
@@ -141,7 +204,7 @@ export default function AnalyticsScreen() {
       });
     });
     return data;
-  }, [categories]);
+  }, [categories, spendingMap]);
 
   // Dynamic Max Value for Bar Chart to prevent top-clipping
   const maxBarValue = useMemo(() => {
@@ -149,31 +212,34 @@ export default function AnalyticsScreen() {
     return Math.ceil(highestVal * 1.2); // Add 20% headroom
   }, [groupedBarData]);
 
-  // 3. Cash Flow Trajectory Line Data
+  // 3. Cash Flow Trajectory: cumulative net per day of the selected month
   const lineChartData = useMemo(() => {
-    if (!hasTransactions) {
-      return [
-        { value: 0, label: 'W1' },
-        { value: 0, label: 'W2' },
-        { value: 0, label: 'W3' },
-        { value: 0, label: 'W4' },
-      ];
-    }
+    const totalDays = daysInMonthKey(selectedMonth);
+    // For the current month, stop at today's date (phone date)
+    const lastDay = isCurrentMonth && selectedMonth === getPhoneMonthKey()
+      ? new Date().getDate()
+      : totalDays;
 
-    const sorted = [...transactions].sort(
-      (a: any, b: any) => new Date(a.transaction_date).getTime() - new Date(b.transaction_date).getTime()
-    );
+    const netByDay: number[] = new Array(totalDays + 1).fill(0);
+    transactions.forEach((t: any) => {
+      const day = Math.min(totalDays, Math.max(1, getTransactionDay(t)));
+      const amt = Number(t.amount || 0);
+      netByDay[day] += t.type === 'income' ? amt : t.type === 'expense' ? -amt : 0;
+    });
 
     let cumulative = 0;
-    return sorted.slice(-8).map((t: any, idx) => {
-      const amt = Number(t.amount || 0);
-      cumulative += t.type === 'income' ? amt : -amt;
-      return {
+    const points = [];
+    for (let day = 1; day <= lastDay; day++) {
+      cumulative += netByDay[day];
+      points.push({
         value: cumulative,
-        label: `D${idx + 1}`,
-      };
-    });
-  }, [transactions, hasTransactions]);
+        label: day === 1 || day % 7 === 1 ? `${day}` : '',
+      });
+    }
+    return points;
+  }, [transactions, selectedMonth, isCurrentMonth]);
+
+  const lineSpacing = Math.max(4, (CHART_WIDTH - 60) / Math.max(1, lineChartData.length));
 
   // Dynamic Max Value for Line Chart to prevent top-clipping
   const maxLineValue = useMemo(() => {
@@ -206,24 +272,12 @@ export default function AnalyticsScreen() {
         <View>
           <Text style={styles.headerTitle}>Financial Analytics</Text>
           <Text style={styles.headerSub}>
-            {!hasTransactions ? 'Projected Envelope Allocations' : 'Real-Time Portfolio Insights'}
+            {!hasTransactions ? 'Projected Envelope Allocations' : `Insights for ${formatMonthKey(selectedMonth)}`}
           </Text>
         </View>
-
-        <View style={styles.timeFilterWrap}>
-          {(['1M', '3M', '6M', 'ALL'] as TimeRange[]).map((range) => (
-            <TouchableOpacity
-              key={range}
-              style={[styles.timeBtn, timeRange === range && styles.timeBtnActive]}
-              onPress={() => setTimeRange(range)}
-            >
-              <Text style={[styles.timeBtnText, timeRange === range && styles.timeBtnTextActive]}>
-                {range}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
       </View>
+
+      <MonthSelector style={styles.monthSelector} />
 
       <ScrollView
         contentContainerStyle={styles.scrollContent}
@@ -239,11 +293,58 @@ export default function AnalyticsScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.bannerTitle}>Budget Projections Active</Text>
               <Text style={styles.bannerSubtitle}>
-                No transactions recorded yet. Graphs are displaying projections based on your planned targets.
+                No transactions recorded in {formatMonthKey(selectedMonth)}. Graphs are displaying projections based on your planned targets.
               </Text>
             </View>
           </View>
         )}
+
+        {/* 0. Month vs previous month */}
+        <View style={styles.card}>
+          <View style={styles.cardHeaderRow}>
+            <View>
+              <Text style={styles.cardTitle}>Monthly Overview</Text>
+              <Text style={styles.cardSubtitle}>
+                {formatMonthKey(selectedMonth, true)} vs {formatMonthKey(previousMonth, true)}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.compareRow}>
+            {[
+              { label: 'Income', value: comparison.income, prev: comparison.prevIncome, change: comparison.incomeChange, goodWhenUp: true },
+              { label: 'Expenses', value: comparison.expenses, prev: comparison.prevExpenses, change: comparison.expenseChange, goodWhenUp: false },
+              { label: 'Net', value: comparison.net, prev: comparison.prevNet, change: comparison.netChange, goodWhenUp: true },
+            ].map((item) => {
+              const up = (item.change ?? 0) > 0;
+              const flat = item.change === 0;
+              const good = flat ? null : up === item.goodWhenUp;
+              return (
+                <View key={item.label} style={styles.compareItem}>
+                  <Text style={styles.compareLabel}>{item.label.toUpperCase()}</Text>
+                  <Text style={styles.compareValue}>${item.value.toFixed(0)}</Text>
+                  <Text style={styles.comparePrev}>was ${item.prev.toFixed(0)}</Text>
+                  {item.change === null ? (
+                    <Text style={styles.compareChangeNeutral}>new</Text>
+                  ) : (
+                    <View style={styles.compareChangeRow}>
+                      {!flat && (
+                        <Ionicons
+                          name={up ? 'arrow-up' : 'arrow-down'}
+                          size={11}
+                          color={good ? '#00D293' : '#FF6B6B'}
+                        />
+                      )}
+                      <Text style={flat ? styles.compareChangeNeutral : { color: good ? '#00D293' : '#FF6B6B', fontSize: 11, fontWeight: '700' }}>
+                        {Math.abs(item.change).toFixed(0)}%
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              );
+            })}
+          </View>
+        </View>
 
         {/* 1. Donut Chart Card */}
         <View style={styles.card}>
@@ -360,7 +461,7 @@ export default function AnalyticsScreen() {
           <View style={styles.cardHeaderRow}>
             <View>
               <Text style={styles.cardTitle}>Net Cash Trajectory</Text>
-              <Text style={styles.cardSubtitle}>Cumulative net cash over time</Text>
+              <Text style={styles.cardSubtitle}>Cumulative net cash by day of {formatMonthKey(selectedMonth, true)}</Text>
             </View>
           </View>
 
@@ -388,6 +489,8 @@ export default function AnalyticsScreen() {
               width={CHART_WIDTH - 20}
               height={160}
               noOfSections={3}
+              spacing={lineSpacing}
+              initialSpacing={8}
             />
           </View>
         </View>
@@ -460,32 +563,50 @@ const styles = StyleSheet.create({
     color: '#64748B',
     marginTop: 2,
   },
-  timeFilterWrap: {
+  monthSelector: {
+    marginHorizontal: 20,
+    marginBottom: 14,
+  },
+  compareRow: {
     flexDirection: 'row',
+    gap: 10,
+  },
+  compareItem: {
+    flex: 1,
     backgroundColor: '#121E2C',
     borderRadius: 12,
-    padding: 4,
-    borderWidth: 1,
-    borderColor: '#192839',
-  },
-  timeBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-  },
-  timeBtnActive: {
-    backgroundColor: '#0C1521',
     borderWidth: 1,
     borderColor: '#1E2D3D',
+    padding: 10,
   },
-  timeBtnText: {
-    fontSize: 11,
-    fontWeight: '600',
+  compareLabel: {
+    fontSize: 9,
+    fontWeight: '800',
     color: '#64748B',
+    letterSpacing: 0.8,
   },
-  timeBtnTextActive: {
+  compareValue: {
+    fontSize: 16,
+    fontWeight: '800',
     color: '#FFFFFF',
+    marginTop: 4,
+  },
+  comparePrev: {
+    fontSize: 10,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  compareChangeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    marginTop: 4,
+  },
+  compareChangeNeutral: {
+    fontSize: 11,
     fontWeight: '700',
+    color: '#64748B',
+    marginTop: 4,
   },
   scrollContent: {
     paddingHorizontal: 20,

@@ -12,15 +12,31 @@ interface Props {
   availablePool: number;
   shortfallAmount: number;
   categorySpendingMap: Record<string, number>;
+  /** Available = rollover + assigned - spent. Falls back to assigned - spent when not provided. */
+  getAvailable?: (category: Category) => number;
 }
 
-export default function CoverModal({ visible, onClose, onConfirm, overspentCategory, eligibleDonors, availablePool, shortfallAmount, categorySpendingMap }: Props) {
-  const [donorSourceId, setDonorSourceId] = useState<string>('pool');
+export default function CoverModal({ visible, onClose, onConfirm, overspentCategory, eligibleDonors, availablePool, shortfallAmount, categorySpendingMap, getAvailable }: Props) {
+  const canUsePool = availablePool > 0 && availablePool >= shortfallAmount;
 
-  // Reset selection when modal opens
+  // Only envelopes that can cover the shortfall are listed
+  const donorOptions = [
+    ...(canUsePool ? [{ id: 'pool', name: 'Unallocated Cash Pool', available: availablePool }] : []),
+    ...eligibleDonors
+      .map(cat => ({
+        id: cat.id,
+        name: cat.name,
+        available: getAvailable ? getAvailable(cat) : Number(cat.target_amount || 0) - (categorySpendingMap[cat.id] || 0),
+      }))
+      .filter(d => d.available >= shortfallAmount),
+  ];
+
+  const [donorSourceId, setDonorSourceId] = useState<string>('');
+
+  // Reset selection to the first valid source when the modal opens
   useEffect(() => {
-    if (visible) setDonorSourceId('pool');
-  }, [visible]);
+    if (visible) setDonorSourceId(canUsePool ? 'pool' : (donorOptions[0]?.id ?? ''));
+  }, [visible, canUsePool, overspentCategory?.id]);
 
   return (
     <Modal visible={visible} animationType="slide" transparent={true}>
@@ -42,20 +58,21 @@ export default function CoverModal({ visible, onClose, onConfirm, overspentCateg
           
           <View style={{ maxHeight: 250 }}>
             <FlatList
-              data={[{ id: 'pool', name: 'Unallocated Cash Pool', available: availablePool }, ...eligibleDonors.map(cat => ({
-                  id: cat.id, name: cat.name, available: Number(cat.target_amount || 0) - (categorySpendingMap[cat.id] || 0)
-              }))]}
+              data={donorOptions}
               keyExtractor={(item) => item.id}
               showsVerticalScrollIndicator={false}
+              ListEmptyComponent={
+                <Text style={styles.emptyText}>
+                  No envelope or cash pool has enough to cover ${shortfallAmount.toFixed(2)}.
+                </Text>
+              }
               renderItem={({ item }) => {
                 const isSelected = donorSourceId === item.id;
-                const isDisabled = item.available < shortfallAmount;
 
                 return (
                   <TouchableOpacity
-                    disabled={isDisabled}
                     onPress={() => setDonorSourceId(item.id)}
-                    style={[styles.donorCard, isSelected && styles.donorCardSelected, isDisabled && styles.donorCardDisabled]}
+                    style={[styles.donorCard, isSelected && styles.donorCardSelected]}
                   >
                     <Text style={styles.donorName}>{item.name}</Text>
                     <Text style={[styles.donorAmount, { color: item.id === 'pool' ? '#FFFFFF' : '#00D293' }]}>
@@ -71,7 +88,11 @@ export default function CoverModal({ visible, onClose, onConfirm, overspentCateg
             <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
               <Text style={styles.cancelText}>Cancel</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.saveBtn} onPress={() => onConfirm(donorSourceId)}>
+            <TouchableOpacity
+              style={[styles.saveBtn, !donorSourceId && styles.donorCardDisabled]}
+              disabled={!donorSourceId}
+              onPress={() => onConfirm(donorSourceId)}
+            >
               <Text style={styles.saveText}>Confirm Transfer</Text>
             </TouchableOpacity>
           </View>
@@ -97,6 +118,7 @@ const styles = StyleSheet.create({
   donorCard: { flexDirection: 'row', justifyContent: 'space-between', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#1E2D3D', backgroundColor: '#03151E', marginBottom: 8 },
   donorCardSelected: { borderColor: '#00D293', backgroundColor: 'rgba(0, 210, 147, 0.05)' },
   donorCardDisabled: { opacity: 0.4 },
+  emptyText: { color: '#64748B', fontSize: 13, textAlign: 'center', paddingVertical: 16 },
   donorName: { color: '#FFFFFF', fontWeight: '600' },
   donorAmount: { fontWeight: '700' }
 });

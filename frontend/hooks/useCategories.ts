@@ -15,16 +15,29 @@ export interface Category {
   user_id: string;
   group_id: string;
   name: string;
+  /** Amount assigned for the month being viewed (or the default budget when no month is passed). */
   target_amount: number;
   current_amount: number; 
   created_at?: string;
+  // Only present when fetched with a month:
+  /** Leftover carried in from the previous month. */
+  rollover?: number;
+  /** Default monthly budget used when a new month is rolled over. */
+  default_amount?: number;
+  /** False when no budget row exists for that month (e.g. months before tracking began). */
+  has_budget?: boolean;
+  month?: string;
 }
 
 export interface GroupedCategory extends CategoryGroup {
   categories: Category[];
 }
 
-export const useCategories = (userId: string | undefined) => {
+/**
+ * @param month optional "YYYY-MM". When given, each category's target_amount / rollover
+ *              reflect that month's envelope instead of the default budget.
+ */
+export const useCategories = (userId: string | undefined, month?: string) => {
   const [groups, setGroups] = useState<CategoryGroup[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -46,7 +59,9 @@ export const useCategories = (userId: string | undefined) => {
       //   throw new Error('Failed to fetch budget hierarchy');
       // }
       const groupsRes = await fetch(`${API_URL}/groups/${userId}`);
-      const categoriesRes = await fetch(`${API_URL}/categories/${userId}`);
+      const categoriesRes = await fetch(
+        `${API_URL}/categories/${userId}${month ? `?month=${month}` : ''}`
+      );
 
       if (!groupsRes.ok) {
         const errText = await groupsRes.text();
@@ -72,7 +87,7 @@ export const useCategories = (userId: string | undefined) => {
     } finally {
       setIsLoading(false);
     }
-  }, [userId]);
+  }, [userId, month]);
 
   const groupedCategories: GroupedCategory[] = useMemo(() => {
     return groups.map(group => ({
@@ -150,14 +165,14 @@ export const useCategories = (userId: string | undefined) => {
   // ==========================================
   // CATEGORY (ENVELOPE) OPERATIONS
   // ==========================================
-  const createCategory = async (categoryData: Omit<Category, 'id' | 'current_amount' | 'user_id'>) => {
+  const createCategory = async (categoryData: Pick<Category, 'name' | 'target_amount' | 'group_id'>) => {
     if (!userId) return false;
 
     try {
       const response = await fetch(`${API_URL}/categories/${userId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...categoryData, user_id: userId }),
+        body: JSON.stringify({ ...categoryData, user_id: userId, month }),
       });
 
       if (!response.ok) throw new Error('Failed to create category');
@@ -172,12 +187,24 @@ export const useCategories = (userId: string | undefined) => {
     }
   };
 
-  const updateCategory = async (categoryId: string, updateData: Partial<Omit<Category, 'id' | 'user_id'>>) => {
+  /**
+   * @param options.applyToDefault false = change only this month's envelope (e.g. covering overspending),
+   *                               true (default) = also change the default budget used for future months
+   */
+  const updateCategory = async (
+    categoryId: string,
+    updateData: Partial<Omit<Category, 'id' | 'user_id'>>,
+    options: { applyToDefault?: boolean } = {}
+  ) => {
     try {
       const response = await fetch(`${API_URL}/categories/${categoryId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updateData),
+        body: JSON.stringify({
+          ...updateData,
+          month,
+          apply_to_default: options.applyToDefault ?? true,
+        }),
       });
 
       if (!response.ok) throw new Error('Failed to update category');

@@ -40,8 +40,35 @@ export const useUsers = () => {
         }
     }, [])
 
+    /**
+     * Silent upsert used on every app open, so a Clerk user always has a row in the
+     * `users` table (sign-up sync can be skipped if the screen unmounts early).
+     * Returns true when the row exists.
+     */
+    const ensureUser = useCallback(async (userData: UserDetails): Promise<boolean> => {
+        try {
+            const response = await fetch(`${API_URL}/users`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user_id: userData.userId,
+                    email: userData.email.toLowerCase(),
+                }),
+            });
+            if (!response.ok) {
+                console.log("User sync failed:", response.status, await response.text());
+                return false;
+            }
+            return true;
+        } catch (e) {
+            console.error("Error syncing user:", e);
+            return false;
+        }
+    }, [])
+
     return {
         isLoading,
-        addUser
+        addUser,
+        ensureUser,
     }
 }
