@@ -239,13 +239,19 @@ export default function AnalyticsScreen() {
     return points;
   }, [transactions, selectedMonth, isCurrentMonth]);
 
-  const lineSpacing = Math.max(4, (CHART_WIDTH - 60) / Math.max(1, lineChartData.length));
+  // LineChart needs at least 2 points: prepend a zero baseline when there is only 1
+  const safeLineData = useMemo(
+    () => (lineChartData.length === 1 ? [{ value: 0, label: '' }, ...lineChartData] : lineChartData),
+    [lineChartData]
+  );
+
+  const lineSpacing = Math.max(4, (CHART_WIDTH - 60) / Math.max(1, safeLineData.length));
 
   // Dynamic Max Value for Line Chart to prevent top-clipping
   const maxLineValue = useMemo(() => {
-    const highestPositive = lineChartData.reduce((max, item) => Math.max(max, item.value), 1);
+    const highestPositive = safeLineData.reduce((max, item) => Math.max(max, item.value), 1);
     return Math.ceil(highestPositive * 1.2); // Add 20% headroom
-  }, [lineChartData]);
+  }, [safeLineData]);
 
   if (!isUserLoaded) {
     return (
@@ -466,12 +472,18 @@ export default function AnalyticsScreen() {
           </View>
 
           <View style={{ alignItems: 'center', marginTop: 10 }}>
+            {safeLineData.length === 0 ? (
+              <View style={[styles.lineEmptyBox, { width: CHART_WIDTH - 20 }]}>
+                <Text style={styles.emptyText}>
+                  No spending trend data recorded for {formatMonthKey(selectedMonth)} yet.
+                </Text>
+              </View>
+            ) : (
             <LineChart
-              data={lineChartData}
+              key={`${selectedMonth}-${safeLineData.length}`}
+              data={safeLineData}
               maxValue={maxLineValue}
-              isAnimated
-              animateOnDataChange
-              animationDuration={1000}
+              isAnimated={false}
               areaChart
               curved
               startFillColor="rgba(0, 210, 147, 0.3)"
@@ -492,6 +504,7 @@ export default function AnalyticsScreen() {
               spacing={lineSpacing}
               initialSpacing={8}
             />
+            )}
           </View>
         </View>
 
@@ -741,6 +754,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 10,
     marginTop: 8,
+  },
+  lineEmptyBox: {
+    backgroundColor: '#0C1521',
+    borderColor: '#192839',
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingVertical: 32,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   emptyText: {
     fontSize: 12,

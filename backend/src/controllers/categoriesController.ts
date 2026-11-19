@@ -3,14 +3,14 @@ import { Request, Response } from "express";
 import { addMonths, getActiveMonth, parseMonth, setMonthAssigned } from "../services/budgetService.js";
 
 // Returns one category shaped for a given month:
-// target_amount = amount assigned for that month, rollover = leftover carried in, default_amount = monthly default
+// target_amount = amount assigned for that month, rollover = always 0 (no carryover between months), default_amount = monthly default
 async function getCategoryForMonth(categoryId: string, month: string) {
   const [row] = await sql`
     SELECT
       c.id, c.user_id, c.group_id, c.name, c.current_amount, c.created_at,
       c.target_amount AS default_amount,
       COALESCE(b.assigned, 0) AS target_amount,
-      COALESCE(b.rollover, 0) AS rollover,
+      0 AS rollover,
       to_char(${month}::date, 'YYYY-MM') AS month
     FROM categories c
     LEFT JOIN category_budgets b ON b.category_id = c.id AND b.month = ${month}::date
@@ -63,14 +63,14 @@ export async function getCategories(req : Request, res : Response) {
 
         const nextMonth = addMonths(month, 1)
 
-        // Month view: assigned + rollover come from category_budgets.
+        // Month view: assigned comes from category_budgets (nothing is carried over).
         // Categories created after that month (and with no budget row) are hidden.
         const categories = await sql`
             SELECT
                 c.id, c.user_id, c.group_id, c.name, c.current_amount, c.created_at,
                 c.target_amount AS default_amount,
                 COALESCE(b.assigned, 0) AS target_amount,
-                COALESCE(b.rollover, 0) AS rollover,
+                0 AS rollover,
                 (b.id IS NOT NULL) AS has_budget,
                 to_char(${month}::date, 'YYYY-MM') AS month
             FROM categories c

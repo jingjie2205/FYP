@@ -13,9 +13,8 @@ interface Props {
 }
 
 export default function CategoryItem({ category, spentAmount, onEdit, onCover }: Props) {
-  const rollover = Number(category.rollover) || 0;
-  // Budget for the month = leftover carried in from last month + amount assigned this month
-  const target = rollover + (Number(category.target_amount) || 0);
+  // Budget for the month = the amount set aside for this month (nothing carries over)
+  const target = Number(category.target_amount) || 0;
   const available = target - spentAmount;
   
   const targetSafe = target > 0 ? target : 1;
@@ -56,9 +55,6 @@ export default function CategoryItem({ category, spentAmount, onEdit, onCover }:
                 ${spentAmount.toFixed(2)}
               </Text>
             </Text>
-            {rollover > 0 && (
-              <Text style={styles.rolloverText}>+${rollover.toFixed(2)} rolled over</Text>
-            )}
           </View>
         </View>
 
@@ -121,7 +117,6 @@ const styles = StyleSheet.create({
   envelopeIconBadge: { width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(0, 210, 147, 0.1)', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
   planName: { color: '#FFFFFF', fontSize: 15, fontWeight: '600' },
   envelopeSub: { color: '#64748B', fontSize: 12 },
-  rolloverText: { color: '#06B6D4', fontSize: 11, fontWeight: '600', marginTop: 2 },
   spentHighlight: { color: '#FF6B6B', fontWeight: '600' },
   cardHeaderRight: { flexDirection: 'row', alignItems: 'center' },
   targetValue: { color: '#FFFFFF', fontSize: 16, fontWeight: '700', marginRight: 12 },

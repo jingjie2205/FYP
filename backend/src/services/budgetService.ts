@@ -47,7 +47,8 @@ export async function getActiveMonth(userId: string): Promise<string> {
 /**
  * Creates category_budgets rows for `month` for every category of the user that does not have one yet.
  * - assigned  = the category's default monthly budget (categories.target_amount), falling back to last month's assigned
- * - rollover  = last month's leftover (rollover + assigned - spent), floored at 0 (overspending does not carry over)
+ * - rollover  = always 0. Leftovers are NOT carried into the new month; unspent envelope money simply returns to the
+ *               overall Unallocated pool because every category restarts at its set-aside monthly budget.
  * Idempotent: existing rows are never touched.
  */
 async function ensureMonthRows(userId: string, month: string) {
@@ -60,22 +61,10 @@ async function ensureMonthRows(userId: string, month: string) {
       c.id,
       ${month}::date,
       COALESCE(c.target_amount, p.assigned, 0),
-      CASE
-        WHEN p.id IS NULL THEN 0
-        ELSE GREATEST(0, p.rollover + p.assigned - COALESCE(s.spent, 0))
-      END
+      0
     FROM categories c
     LEFT JOIN category_budgets p
       ON p.category_id = c.id AND p.month = ${prevMonth}::date
-    LEFT JOIN (
-      SELECT category_id, SUM(amount) AS spent
-      FROM transactions
-      WHERE user_id = ${userId}
-        AND type = 'expense'
-        AND transaction_date >= ${prevMonth}::date
-        AND transaction_date < ${month}::date
-      GROUP BY category_id
-    ) s ON s.category_id = c.id
     WHERE c.user_id = ${userId}
     ON CONFLICT (category_id, month) DO NOTHING
   `;

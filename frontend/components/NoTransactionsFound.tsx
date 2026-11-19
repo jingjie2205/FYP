@@ -2,11 +2,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { Text, TouchableOpacity, View } from "react-native";
 import { styles } from "../assets/styles/home.styles";
 import { COLORS } from "../constants/colors";
-import { useRouter } from "expo-router";
 
-const NoTransactionsFound = () => {
-  const router = useRouter();
-
+const NoTransactionsFound = ({ onAdd }: { onAdd?: () => void }) => {
   return (
     <View style={styles.emptyState}>
       <Ionicons
@@ -19,7 +16,7 @@ const NoTransactionsFound = () => {
       <Text style={styles.emptyStateText}>
         Start tracking your finances by adding your first transaction
       </Text>
-      <TouchableOpacity style={styles.emptyStateButton} onPress={() => router.push("/home/create")}>
+      <TouchableOpacity style={styles.emptyStateButton} onPress={onAdd}>
         <Ionicons name="add-circle" size={18} color={COLORS.white} />
         <Text style={styles.emptyStateButtonText}>Add Transaction</Text>
       </TouchableOpacity>
