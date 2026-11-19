@@ -394,7 +394,7 @@ In "reply", briefly explain the proposal and say the user can review and confirm
 
     const nullableStr = { type: Type.STRING, nullable: true };
     const chat = ai.chats.create({
-      model: "gemini-3.6-flash",
+      model: "gemini-3.5-flash-lite",
       config: {
         systemInstruction,
         temperature: 0.1,
