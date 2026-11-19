@@ -1,5 +1,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { ChatContext } from "./chatContextService.js";
+import { isValidDateString, normalizeFrequency } from "./recurringService.js";
 
 dotenv.config();
 
@@ -31,20 +33,52 @@ export interface ReceiptDraft {
   uncertain_fields: ReceiptField[];
 }
 
-export interface BudgetEnvelopeContext {
-  name: string;
-  currentAmount: number;
-  targetAmount: number;
-}
+export type ChatActionMetadata =
+  | { actionType: "none" }
+  | {
+      actionType: "reallocation";
+      transferDetails: {
+        sourceCategoryId: string;
+        sourceCategory: string;
+        destCategoryId: string;
+        destCategory: string;
+        amount: number;
+      };
+    }
+  | {
+      actionType: "budget_allocation";
+      budgetPlan: {
+        targetIncome: number;
+        month: string;
+        allocations: {
+          categoryId: string;
+          categoryName: string;
+          groupName: string;
+          currentAssigned: number;
+          proposedAssigned: number;
+        }[];
+      };
+    }
+  | {
+      actionType: "recurring_proposal";
+      mode: "create" | "update";
+      recurringDetails: {
+        recurringId: string | null;
+        title: string;
+        amount: number;
+        type: "expense" | "income";
+        accountId: string | null;
+        accountName: string | null;
+        categoryId: string | null;
+        categoryName: string | null;
+        frequency: string;
+        nextDate: string;
+      };
+    };
 
 export interface ChatResponsePayload {
   replyText: string;
-  actionType: "none" | "reallocation";
-  transferDetails?: {
-    sourceCategory: string;
-    destCategory: string;
-    amount: number;
-  };
+  metadata: ChatActionMetadata;
 }
 
 const isRealDate = (value: unknown): value is string => {
@@ -153,86 +187,246 @@ ENVELOPES: ${JSON.stringify(envelopes)}`;
   return { title, amount, account_id, category_id, transaction_date, uncertain_fields: [...uncertain] };
 }
 
+const positive = (v: unknown): number | null => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null;
+};
+
+/**
+ * Checks a model-proposed action against the user's real rows. Returns { actionType: "none" } when anything is
+ * invalid, so a broken action card is never rendered. Names/groups are always taken from the database, not the model.
+ */
+export function validateChatProposal(raw: any, ctx: ChatContext): ChatActionMetadata {
+  const none: ChatActionMetadata = { actionType: "none" };
+  if (!raw || typeof raw !== "object") return none;
+
+  const envelopeById = new Map(ctx.envelopes.map((e) => [e.category_id, e]));
+  const accountById = new Map(ctx.accounts.map((a) => [a.id, a]));
+  const recurringById = new Map(ctx.recurring.map((r) => [r.id, r]));
+
+  if (raw.actionType === "reallocation") {
+    const d = raw.transferDetails;
+    const src = envelopeById.get(String(d?.sourceCategoryId ?? ""));
+    const dest = envelopeById.get(String(d?.destCategoryId ?? ""));
+    const amount = positive(d?.amount);
+    if (!src || !dest || src.category_id === dest.category_id || amount === null) return none;
+    // The reallocate endpoint rejects moving more than the source's assigned budget; don't offer what would fail
+    if (amount > (src.months[ctx.currentMonth]?.assigned ?? 0)) return none;
+    return {
+      actionType: "reallocation",
+      transferDetails: {
+        sourceCategoryId: src.category_id,
+        sourceCategory: src.name,
+        destCategoryId: dest.category_id,
+        destCategory: dest.name,
+        amount,
+      },
+    };
+  }
+
+  if (raw.actionType === "budget_allocation") {
+    const plan = raw.budgetPlan;
+    const targetIncome = positive(plan?.targetIncome);
+    const month = typeof plan?.month === "string" && /^\d{4}-(0[1-9]|1[0-2])$/.test(plan.month) ? plan.month : ctx.currentMonth;
+    if (targetIncome === null || !Array.isArray(plan?.allocations)) return none;
+
+    const seen = new Set<string>();
+    const allocations: { categoryId: string; categoryName: string; groupName: string; currentAssigned: number; proposedAssigned: number }[] = [];
+    let total = 0;
+    for (const item of plan.allocations) {
+      const env = envelopeById.get(String(item?.categoryId ?? ""));
+      const proposed = Number(item?.proposedAssigned);
+      if (!env || seen.has(env.category_id) || !Number.isFinite(proposed) || proposed < 0) return none;
+      seen.add(env.category_id);
+      const rounded = Math.round(proposed * 100) / 100;
+      total += rounded;
+      allocations.push({
+        categoryId: env.category_id,
+        categoryName: env.name,
+        groupName: env.group_name ?? "",
+        currentAssigned: env.months[ctx.currentMonth]?.assigned ?? 0,
+        proposedAssigned: rounded,
+      });
+    }
+    if (allocations.length === 0 || total > targetIncome + 0.005) return none;
+    return { actionType: "budget_allocation", budgetPlan: { targetIncome, month, allocations } };
+  }
+
+  if (raw.actionType === "recurring_proposal") {
+    const d = raw.recurringDetails;
+    const mode = raw.mode === "update" ? "update" : raw.mode === "create" ? "create" : null;
+    const amount = positive(d?.amount);
+    const title = typeof d?.title === "string" ? d.title.trim() : "";
+    const type = d?.type === "income" ? "income" : d?.type === "expense" ? "expense" : null;
+    const freq = normalizeFrequency(d?.frequency);
+    if (!mode || amount === null || !title || !type || !freq) return none;
+
+    let recurringId: string | null = null;
+    if (mode === "update") {
+      recurringId = String(d?.recurringId ?? "");
+      if (!recurringById.has(recurringId)) return none;
+    }
+
+    let accountId: string | null = null;
+    let accountName: string | null = null;
+    if (d?.accountId) {
+      const acc = accountById.get(String(d.accountId));
+      if (!acc) return none;
+      accountId = acc.id;
+      accountName = acc.name;
+    }
+
+    let categoryId: string | null = null;
+    let categoryName: string | null = null;
+    if (type === "expense" && d?.categoryId) {
+      const env = envelopeById.get(String(d.categoryId));
+      if (!env) return none;
+      categoryId = env.category_id;
+      categoryName = env.name;
+    }
+
+    const nextDate = isValidDateString(d?.nextDate) ? d.nextDate : ctx.today;
+    return {
+      actionType: "recurring_proposal",
+      mode,
+      recurringDetails: {
+        recurringId,
+        title: title.slice(0, 255),
+        amount,
+        type,
+        accountId,
+        accountName,
+        categoryId,
+        categoryName,
+        frequency: freq.charAt(0).toUpperCase() + freq.slice(1),
+        nextDate,
+      },
+    };
+  }
+
+  return none;
+}
+
+/**
+ * Chat assistant. Read-only: it receives a snapshot of the user's data, has no tools, and can only PROPOSE actions.
+ * Proposals are validated against the snapshot before being returned; the app applies them through user-confirmed modals.
+ */
 export async function processChatQueryWithGemini(
   userQuery: string,
   history: Array<{ role: string; content: string }>,
-  context: {
-    accounts?: any[];
-    categoryGroups?: any[];
-    categories?: any[];
-    savingsPlans?: any[];
-    recurringTransactions?: any[];
-    recentTransactions?: any[];
-  }
+  ctx: ChatContext
 ): Promise<ChatResponsePayload> {
   try {
-    const slimCategories = (context.categories || []).map((c: any) => ({
-      name: c.name,
-      allocatedBudget: Number(c.target_amount ?? 0),
-    }));
+    const systemInstruction = `You are Finley, a friendly personal finance assistant inside a zero-based budgeting app.
+Today's date is ${ctx.today}. The current month is ${ctx.currentMonth}. All money is in dollars.
+You have READ-ONLY access to the user's data (JSON below). You cannot change anything yourself.
 
-    const validCategoryNames: string[] = slimCategories
-      .map((c) => c.name)
-      .filter(Boolean);
+DATA (all figures are exact; use them as given):
+${JSON.stringify({
+  accounts: ctx.accounts,
+  totalCash: ctx.totalCash,
+  unallocatedPool: ctx.unallocatedPool,
+  envelopes: ctx.envelopes,
+  spendingSummary: ctx.spendingSummary,
+  savingsPlans: ctx.savingsPlans,
+  recurring: ctx.recurring,
+  recentTransactions: ctx.recentTransactions,
+})}
 
-    const slimSavings = (context.savingsPlans || []).map((s: any) => ({
-      name: s.name,
-      savedAmount: Number(s.saved_amount ?? 0),
-      targetAmount: Number(s.target_amount ?? 0),
-    }));
+Envelope "months" hold assigned, spent and available (= assigned - spent) for the current month and the 6 months before it.
+"spendingSummary" holds exact monthly totals per category plus last-3-month totals and averages: use them for spending questions instead of adding transactions yourself.
+unallocatedPool = totalCash - sum(max(0, available)) - sum(savings saved_amount).
 
-    const slimRecentTx = (context.recentTransactions || [])
-      .slice(0, 15)
-      .map((t: any) => ({
-        title: t.title || t.merchant || t.description,
-        amount: Number(t.amount ?? 0),
-        category: t.category_name || t.category,
-        date: t.date || t.created_at,
-      }));
+OUTPUT: return JSON {"reply": string, "metadata": object | null}.
 
-    const systemInstruction = `
-You are Finley, a helpful, intelligent personal AI financial assistant for a zero-based budgeting application.
-You have direct access to the user's financial data below:
+ANALYTICAL Q&A: when asked about spending trends, category totals, savings progress or affordability, answer with concise bullet points
+(e.g. month-by-month figures, the 3-month total and the monthly average). NEVER invent numbers that are not in the data; if the data does not
+cover the question, say so. Set "metadata" to null.
 
-- Budget Categories (Total Allocated Budgets): ${JSON.stringify(slimCategories)}
-- Savings Plans: ${JSON.stringify(slimSavings)}
-- Recent Transactions (last 15): ${JSON.stringify(slimRecentTx)}
-
-CRITICAL REALLOCATION RULES:
-1. If the user wants to reallocate, move, or transfer funds between budget categories (e.g., "transfer $20 from food to transport"), set "actionType" to "reallocation".
-2. Map the user's casual/shorthand terms to the closest matching category from this exact list: ${JSON.stringify(validCategoryNames)}.
-3. You MUST set "sourceCategory" and "destCategory" in "transferDetails" to the EXACT string from that list.
-4. In "replyText", write a brief, natural confirmation message. NEVER include raw JSON or markdown code blocks inside "replyText".
-5. If the user's request is a general question and not a budget transfer, set "actionType" to "none" and reply conversationally in "replyText".
-    `.trim();
+ACTION PROPOSALS (only when the user asks for one; otherwise metadata is null). Use ids exactly as they appear in the data. Never invent ids.
+1. Move money between two existing envelopes -> metadata = {"actionType":"reallocation","transferDetails":{"sourceCategoryId","sourceCategory","destCategoryId","destCategory","amount"}}
+   The amount must not exceed the source envelope's assigned amount this month.
+2. Build or adjust a monthly budget from an income amount (e.g. "make a budget with 1500 income") using the user's EXISTING envelopes ->
+   {"actionType":"budget_allocation","budgetPlan":{"targetIncome":number,"month":"YYYY-MM","allocations":[{"categoryId","categoryName","groupName","currentAssigned","proposedAssigned"}]}}
+   The total of all proposedAssigned must never exceed targetIncome. Use the month ${ctx.currentMonth} unless told otherwise. Base the split on the user's past spending and current assignments.
+3. Create or edit a recurring payment -> {"actionType":"recurring_proposal","mode":"create"|"update","recurringDetails":{"recurringId":string|null,"title","amount","type":"expense"|"income","accountId":string|null,"accountName":string|null,"categoryId":string|null,"categoryName":string|null,"frequency":"Weekly"|"Monthly"|"Yearly","nextDate":"YYYY-MM-DD"}}
+   For "update", recurringId must be an existing recurring id from the data. Use null for an account or envelope you are unsure about.
+In "reply", briefly explain the proposal and say the user can review and confirm it below. Never put JSON or code blocks in "reply". Nothing is applied until the user confirms.`;
 
     const formattedHistory = history.slice(-11, -1).map((h) => ({
       role: h.role === "assistant" ? "model" : "user",
       parts: [{ text: h.content || "" }],
     }));
 
+    const nullableStr = { type: Type.STRING, nullable: true };
     const chat = ai.chats.create({
       model: "gemini-3.6-flash",
       config: {
-        systemInstruction: systemInstruction,
+        systemInstruction,
         temperature: 0.1,
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            replyText: { type: Type.STRING },
-            actionType: { type: Type.STRING, enum: ["none", "reallocation"] },
-            transferDetails: {
+            reply: { type: Type.STRING },
+            metadata: {
               type: Type.OBJECT,
+              nullable: true,
               properties: {
-                sourceCategory: { type: Type.STRING },
-                destCategory: { type: Type.STRING },
-                amount: { type: Type.NUMBER },
+                actionType: { type: Type.STRING, enum: ["reallocation", "budget_allocation", "recurring_proposal"] },
+                mode: { type: Type.STRING, nullable: true, enum: ["create", "update"] },
+                transferDetails: {
+                  type: Type.OBJECT,
+                  nullable: true,
+                  properties: {
+                    sourceCategoryId: { type: Type.STRING },
+                    sourceCategory: { type: Type.STRING },
+                    destCategoryId: { type: Type.STRING },
+                    destCategory: { type: Type.STRING },
+                    amount: { type: Type.NUMBER },
+                  },
+                },
+                budgetPlan: {
+                  type: Type.OBJECT,
+                  nullable: true,
+                  properties: {
+                    targetIncome: { type: Type.NUMBER },
+                    month: { type: Type.STRING },
+                    allocations: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          categoryId: { type: Type.STRING },
+                          categoryName: { type: Type.STRING },
+                          groupName: { type: Type.STRING },
+                          currentAssigned: { type: Type.NUMBER },
+                          proposedAssigned: { type: Type.NUMBER },
+                        },
+                      },
+                    },
+                  },
+                },
+                recurringDetails: {
+                  type: Type.OBJECT,
+                  nullable: true,
+                  properties: {
+                    recurringId: nullableStr,
+                    title: { type: Type.STRING },
+                    amount: { type: Type.NUMBER },
+                    type: { type: Type.STRING, enum: ["expense", "income"] },
+                    accountId: nullableStr,
+                    accountName: nullableStr,
+                    categoryId: nullableStr,
+                    categoryName: nullableStr,
+                    frequency: { type: Type.STRING },
+                    nextDate: { type: Type.STRING },
+                  },
+                },
               },
-              required: ["sourceCategory", "destCategory", "amount"],
             },
           },
-          required: ["replyText", "actionType"],
+          required: ["reply"],
         },
       },
       history: formattedHistory,
@@ -245,40 +439,19 @@ CRITICAL REALLOCATION RULES:
     try {
       parsed = JSON.parse(rawText);
     } catch {
-      parsed = {
-        replyText:
-          rawText.replace(/```json[\s\S]*?```/g, "").trim() ||
-          "I'm here to help with your budget!",
-        actionType: "none",
-      };
+      parsed = { reply: rawText.replace(/```json[\s\S]*?```/g, "").trim() };
     }
 
-    const replyText = (parsed.replyText || "I've processed your budget query.")
+    const replyText = String(parsed.reply || "I've looked at your budget.")
       .replace(/```json[\s\S]*?```/g, "")
       .trim();
 
-    const isReallocation =
-      parsed.actionType === "reallocation" &&
-      parsed.transferDetails?.sourceCategory &&
-      parsed.transferDetails?.destCategory &&
-      Number(parsed.transferDetails?.amount) > 0;
-
-    return {
-      replyText,
-      actionType: isReallocation ? "reallocation" : "none",
-      transferDetails: isReallocation
-        ? {
-            sourceCategory: parsed.transferDetails.sourceCategory.trim(),
-            destCategory: parsed.transferDetails.destCategory.trim(),
-            amount: Number(parsed.transferDetails.amount),
-          }
-        : undefined,
-    };
+    return { replyText, metadata: validateChatProposal(parsed.metadata, ctx) };
   } catch (error) {
     console.error("Error in geminiService:", error);
     return {
       replyText: "Sorry, I encountered an error analyzing your financial data.",
-      actionType: "none",
+      metadata: { actionType: "none" },
     };
   }
 }
