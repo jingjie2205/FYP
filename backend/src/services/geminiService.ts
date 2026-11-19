@@ -311,13 +311,36 @@ export function validateChatProposal(raw: any, ctx: ChatContext): ChatActionMeta
  * Chat assistant. Read-only: it receives a snapshot of the user's data, has no tools, and can only PROPOSE actions.
  * Proposals are validated against the snapshot before being returned; the app applies them through user-confirmed modals.
  */
+const FINANCE_WORDS =
+  /budget|spen[dt]|spending|expens|income|salary|paycheck|allowance|envelope|categor|account|balance|cash|saving|saved|goal|recurring|subscription|\bbills?\b|\brent\b|transfer|reallocat|allocat|afford|transaction|purchase|bought|\bpaid\b|\bpay\b|money|dollar|\$|\d|groceries|food|transport|month|week|year|average|total|how much|overspen|unallocated|\bpool\b|deposit|withdraw|\bcost|invest|debt|loan|\bmove\b|\bcover\b/i;
+
+/**
+ * Decides whether a chat message needs the user's financial snapshot. Cheap heuristic (no model call):
+ * the snapshot is skipped only for messages with no finance wording whose preceding turns were not about money either
+ * (greetings, thanks, "what can you do?"). Follow-ups such as "and last month?" keep the snapshot because the
+ * previous turns were financial. When in doubt the snapshot is included.
+ */
+export function needsFinancialContext(userQuery: string, history: Array<{ role: string; content: string }>): boolean {
+  if (FINANCE_WORDS.test(userQuery)) return true;
+  // history ends with the current message; look at the two turns before it
+  const previous = history.slice(0, -1).slice(-2);
+  return previous.some((h) => FINANCE_WORDS.test(h.content || ""));
+}
+
 export async function processChatQueryWithGemini(
   userQuery: string,
   history: Array<{ role: string; content: string }>,
-  ctx: ChatContext
+  ctx: ChatContext | null,
+  todayInput?: string
 ): Promise<ChatResponsePayload> {
   try {
-    const systemInstruction = `You are Finley, a friendly personal finance assistant inside a zero-based budgeting app.
+    const today = isValidDateString(todayInput) ? String(todayInput) : new Date().toISOString().slice(0, 10);
+    const systemInstruction = ctx === null
+      ? `You are Finley, a friendly personal finance assistant inside a zero-based budgeting app. Today's date is ${today}.
+No financial data is loaded for this message. Reply briefly and conversationally. Never state or guess any of the user's balances, spending or budgets.
+If the user is asking about their own money, budget, spending, savings or recurring payments, ask them to say what they want to look at (for example "how much did I spend on groceries last month?") so you can check it.
+Return JSON {"reply": string, "metadata": null}. Never put JSON or code blocks in "reply".`
+      : `You are Finley, a friendly personal finance assistant inside a zero-based budgeting app.
 Today's date is ${ctx.today}. The current month is ${ctx.currentMonth}. All money is in dollars.
 You have READ-ONLY access to the user's data (JSON below). You cannot change anything yourself.
 
@@ -446,7 +469,7 @@ In "reply", briefly explain the proposal and say the user can review and confirm
       .replace(/```json[\s\S]*?```/g, "")
       .trim();
 
-    return { replyText, metadata: validateChatProposal(parsed.metadata, ctx) };
+    return { replyText, metadata: ctx ? validateChatProposal(parsed.metadata, ctx) : ({ actionType: "none" } as ChatActionMetadata) };
   } catch (error) {
     console.error("Error in geminiService:", error);
     return {
