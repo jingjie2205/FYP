@@ -1,28 +1,29 @@
 import React, { useState, useEffect } from "react";
-import { 
-  View, 
-  Text, 
-  TextInput, 
-  TouchableOpacity, 
-  Alert, 
-  StyleSheet, 
-  KeyboardAvoidingView, 
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  KeyboardAvoidingView,
   Platform,
-  ActivityIndicator
+  ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useClerk, useSignIn, useOAuth } from "@clerk/expo";
+import { useClerk, useSignIn, useSSO } from "@clerk/expo";
 import { Link, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as WebBrowser from "expo-web-browser";
-import * as Linking from "expo-linking";
+import * as AuthSession from "expo-auth-session";
 import { useUsers } from "@/hooks/useUsers";
+import { getClerkErrorMessage, isCancellationError, messageForCode } from "@/utils/clerkErrors";
 
-// Required to handle the OAuth browser redirect safely
+// Module top-level: clears stale redirect handlers (Fast Refresh / interrupted logins)
 WebBrowser.maybeCompleteAuthSession();
 
 const useWarmUpBrowser = () => {
   useEffect(() => {
+    if (Platform.OS === "web") return;
     void WebBrowser.warmUpAsync();
     return () => {
       void WebBrowser.coolDownAsync();
@@ -30,11 +31,13 @@ const useWarmUpBrowser = () => {
   }, []);
 };
 
-export default function SignInPage() {
-  useWarmUpBrowser(); 
+type Factor = "first" | "second";
 
-  const { signIn, errors, fetchStatus } = useSignIn();
-  const { startOAuthFlow } = useOAuth({ strategy: "oauth_google" });
+export default function SignInPage() {
+  useWarmUpBrowser();
+
+  const { signIn, fetchStatus } = useSignIn();
+  const { startSSOFlow } = useSSO();
   const { setActive } = useClerk();
   const router = useRouter();
   const { addUser } = useUsers();
@@ -42,127 +45,243 @@ export default function SignInPage() {
   const [emailAddress, setEmailAddress] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
-  const [pendingMfa, setPendingMfa] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [factor, setFactor] = useState<Factor>("second");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [ssoLoading, setSsoLoading] = useState(false);
 
-  const isFetching = fetchStatus === "fetching";
+  const isBusy = loading || ssoLoading || fetchStatus === "fetching";
 
   // ==========================================
   // GOOGLE SSO HANDLER
   // ==========================================
   const handleGoogleSSO = async () => {
+    if (ssoLoading || loading) return;
+    setError("");
+    setNotice("");
+    setSsoLoading(true);
     try {
-      // Pass the explicit redirect URL here
-      const { createdSessionId, setActive, signUp } = await startOAuthFlow({
-        redirectUrl: Linking.createURL("/(auth)/sign-in"),
-      });
+      // Clear any previously backed-out browser session so it cannot block this attempt
+      if (Platform.OS !== "web") {
+        try {
+          WebBrowser.dismissAuthSession();
+        } catch {}
+      }
+
+      const redirectUrl = AuthSession.makeRedirectUri();
+      const { createdSessionId, setActive: setSsoActive, signUp, signIn: ssoSignIn, authSessionResult } =
+        await startSSOFlow({ strategy: "oauth_google", redirectUrl });
 
       if (createdSessionId) {
-        if (signUp?.status === "complete") {
-          const clerkUserId = signUp.createdUserId;
-          const email = signUp.emailAddress;
-          
-          if (clerkUserId && email) {
-            try {
-              await addUser({ userId: clerkUserId, email: email });
-            } catch (dbErr) {
-              console.error("Database sync failed on Google SSO:", dbErr);
-            }
+        if (signUp?.status === "complete" && signUp.createdUserId && signUp.emailAddress) {
+          try {
+            await addUser({ userId: signUp.createdUserId, email: signUp.emailAddress });
+          } catch (dbErr) {
+            console.error("Database sync failed on Google SSO:", dbErr);
           }
         }
+        await (setSsoActive ?? setActive)({ session: createdSessionId });
+        // The root layout redirects signed-in users to (home)
+        return;
+      }
 
-        await setActive!({ session: createdSessionId });
-        router.replace("/(home)/home");
+      // No session: user cancelled, or Clerk needs something more
+      if (authSessionResult && authSessionResult.type !== "success") return;
+
+      if (signUp?.status === "missing_requirements") {
+        setError("We couldn't finish setting up your account with Google. Please try again or sign up with email.");
+      } else if (ssoSignIn?.status === "needs_second_factor" || ssoSignIn?.status === "needs_client_trust") {
+        setError("Additional verification is required. Please sign in with your email and password instead.");
+      } else {
+        setError("Google sign-in wasn't completed. Please try again.");
       }
     } catch (err: any) {
+      if (isCancellationError(err)) return;
       console.error("Google SSO Error:", err);
-      Alert.alert("Google Login Failed", err?.message || "An error occurred during single sign-on.");
+      setError(getClerkErrorMessage(err, "Unable to sign in with Google. Please try again."));
+    } finally {
+      setSsoLoading(false);
     }
+  };
+
+  // ==========================================
+  // SHARED HELPERS
+  // ==========================================
+  const finalizeSignIn = async () => {
+    const { error: finalizeError } = await signIn!.finalize({
+      navigate: async ({ session }) => {
+        if (session?.id) await setActive({ session: session.id });
+        router.replace("/(home)/home");
+      },
+    });
+    if (finalizeError) setError(getClerkErrorMessage(finalizeError));
+  };
+
+  /** Send the email code for whichever factor Clerk is asking for. */
+  const sendVerificationCode = async (which: Factor): Promise<boolean> => {
+    const { error: sendError } =
+      which === "second"
+        ? await signIn!.mfa.sendEmailCode()
+        : await signIn!.emailCode.sendCode();
+    if (sendError) {
+      setError(getClerkErrorMessage(sendError));
+      return false;
+    }
+    return true;
+  };
+
+  /** Decide what to do next based on the sign-in status. */
+  const routeStatus = async () => {
+    const status = signIn!.status;
+
+    if (status === "complete") {
+      await finalizeSignIn();
+      return;
+    }
+
+    if (status === "needs_second_factor" || status === "needs_client_trust") {
+      // New-device verification (Client Trust): send the code automatically.
+      if (await sendVerificationCode("second")) {
+        setFactor("second");
+        setCode("");
+        setVerifying(true);
+      }
+      return;
+    }
+
+    if (status === "needs_first_factor") {
+      if (await sendVerificationCode("first")) {
+        setFactor("first");
+        setCode("");
+        setVerifying(true);
+      }
+      return;
+    }
+
+    setError(messageForCode(status) ?? getClerkErrorMessage(null));
   };
 
   // ==========================================
   // STANDARD EMAIL HANDLER
   // ==========================================
   const handleSubmit = async () => {
-    try {
-      await signIn!.password({
-        emailAddress: emailAddress.trim(),
-        password,
-      });
+    if (isBusy) return;
+    const identifier = emailAddress.trim();
+    if (!identifier || !password) {
+      setError(messageForCode("needs_identifier")!);
+      return;
+    }
 
-      if (signIn!.status === "complete") {
-        await signIn!.finalize({
-          navigate: async ({ session }) => {
-            if (session?.id) await setActive({ session: session.id });
-            router.replace("/(home)/home");
-          },
-        });
-      } else if (
-        signIn!.status === "needs_second_factor" ||
-        signIn!.status === "needs_client_trust"
-      ) {
-        try {
-          await signIn!.mfa.sendEmailCode();
-        } catch {}
-        setPendingMfa(true);
-      } else {
-        Alert.alert("Sign In", `Status: ${signIn!.status}`);
+    setError("");
+    setNotice("");
+    setLoading(true);
+    try {
+      const { error: createError } = await signIn!.create({ identifier, password });
+      if (createError) {
+        console.error("Sign-in error:", createError);
+        setError(getClerkErrorMessage(createError));
+        return;
       }
-    } catch (err: any) {
+      await routeStatus();
+    } catch (err) {
       console.error("Sign-in error:", err);
-      const message =
-        errors?.fields?.identifier?.message ||
-        errors?.fields?.password?.message ||
-        err?.message ||
-        "Invalid credentials or network failure.";
-      Alert.alert("Sign In Failed", message);
+      setError(getClerkErrorMessage(err));
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleVerify = async () => {
+    if (isBusy) return;
+    const trimmed = code.trim();
+    if (!trimmed) return;
+
+    setError("");
+    setNotice("");
+    setLoading(true);
     try {
-      await signIn!.mfa.verifyEmailCode({ code });
+      const { error: verifyError } =
+        factor === "second"
+          ? await signIn!.mfa.verifyEmailCode({ code: trimmed })
+          : await signIn!.emailCode.verifyCode({ code: trimmed });
+
+      if (verifyError) {
+        console.error("Verification error:", verifyError);
+        setError(getClerkErrorMessage(verifyError, messageForCode("form_code_incorrect")!));
+        return;
+      }
 
       if (signIn!.status === "complete") {
-        await signIn!.finalize({
-          navigate: async ({ session }) => {
-            if (session?.id) await setActive({ session: session.id });
-            router.replace("/(home)/home");
-          },
-        });
+        await finalizeSignIn();
+      } else {
+        setError(getClerkErrorMessage(null));
       }
-    } catch (err: any) {
-      console.error("MFA error:", err);
-      Alert.alert("Verification Failed", errors?.fields?.code?.message || "Invalid code.");
+    } catch (err) {
+      console.error("Verification error:", err);
+      setError(getClerkErrorMessage(err, messageForCode("form_code_incorrect")!));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResend = async () => {
+    if (isBusy) return;
+    setError("");
+    setNotice("");
+    setLoading(true);
+    try {
+      if (await sendVerificationCode(factor)) {
+        setNotice("A new code has been sent to your email.");
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleCancelVerification = () => {
-    setPendingMfa(false);
+    setVerifying(false);
     setCode("");
+    setError("");
+    setNotice("");
   };
 
+  const errorBanner = error ? (
+    <View style={styles.errorBox}>
+      <Ionicons name="alert-circle-outline" size={20} color="#FF6B6B" />
+      <Text style={styles.errorBoxText}>{error}</Text>
+      <TouchableOpacity onPress={() => setError("")} hitSlop={8}>
+        <Ionicons name="close" size={20} color="#FF6B6B" />
+      </TouchableOpacity>
+    </View>
+  ) : null;
+
   // ==========================================
-  // MFA / OTP VERIFICATION VIEW
+  // EMAIL CODE VERIFICATION VIEW
   // ==========================================
-  if (pendingMfa || signIn?.status === "needs_client_trust") {
+  if (verifying) {
     return (
       <SafeAreaView style={styles.container}>
-        <KeyboardAvoidingView 
-          behavior={Platform.OS === "ios" ? "padding" : "height"} 
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
           style={styles.keyboardView}
         >
           <View style={styles.headerContainer}>
             <View style={styles.iconWrapper}>
               <Ionicons name="shield-checkmark" size={40} color="#00D293" />
             </View>
-            <Text style={styles.title}>Security Check</Text>
+            <Text style={styles.title}>Verify This Device</Text>
             <Text style={styles.subtitle}>
-              A new device or session was detected. Enter the one-time code sent to your email.
+              For your security, enter the 6-digit code sent to your email to verify this device.
             </Text>
           </View>
 
           <View style={styles.formContainer}>
-            <View style={styles.inputGroup}>
+            {errorBanner}
+            {notice ? <Text style={styles.noticeText}>{notice}</Text> : null}
+
+            <View style={[styles.inputGroup, !!error && styles.inputErrorBorder]}>
               <Ionicons name="keypad-outline" size={20} color="#64748B" style={styles.inputIcon} />
               <TextInput
                 style={styles.input}
@@ -172,27 +291,28 @@ export default function SignInPage() {
                 onChangeText={setCode}
                 keyboardType="numeric"
                 maxLength={6}
+                autoFocus
               />
             </View>
-            {errors?.fields?.code && <Text style={styles.errorText}>{errors.fields.code.message}</Text>}
 
             <TouchableOpacity
-              style={[styles.primaryButton, (!code || isFetching) && styles.buttonDisabled]}
+              style={[styles.primaryButton, (!code.trim() || isBusy) && styles.buttonDisabled]}
               onPress={handleVerify}
-              disabled={!code || isFetching}
+              disabled={!code.trim() || isBusy}
             >
-              {isFetching ? (
-                <ActivityIndicator color="#03151E" />
+              {isBusy ? (
+                <ActivityIndicator color="#070D14" />
               ) : (
                 <Text style={styles.primaryButtonText}>Verify Code</Text>
               )}
             </TouchableOpacity>
 
-            <TouchableOpacity 
-              style={styles.secondaryButton} 
-              onPress={() => signIn!.mfa.sendEmailCode()}
+            <TouchableOpacity
+              style={[styles.secondaryButton, isBusy && styles.buttonDisabled]}
+              onPress={handleResend}
+              disabled={isBusy}
             >
-              <Text style={styles.secondaryButtonText}>Resend Email Code</Text>
+              <Text style={styles.secondaryButtonText}>Resend Code</Text>
             </TouchableOpacity>
           </View>
 
@@ -209,10 +329,12 @@ export default function SignInPage() {
   // ==========================================
   // MAIN SIGN IN VIEW
   // ==========================================
+  const canSubmit = !!emailAddress.trim() && !!password && !isBusy;
+
   return (
     <SafeAreaView style={styles.container}>
-      <KeyboardAvoidingView 
-        behavior={Platform.OS === "ios" ? "padding" : "height"} 
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={styles.keyboardView}
       >
         <View style={styles.headerContainer}>
@@ -224,13 +346,15 @@ export default function SignInPage() {
         </View>
 
         <View style={styles.formContainer}>
-          {/* Email Input */}
+          {errorBanner}
+
           <Text style={styles.inputLabel}>Email Address</Text>
-          <View style={[styles.inputGroup, errors?.fields?.identifier && styles.inputErrorBorder]}>
+          <View style={styles.inputGroup}>
             <Ionicons name="mail-outline" size={20} color="#64748B" style={styles.inputIcon} />
             <TextInput
               style={styles.input}
               autoCapitalize="none"
+              autoCorrect={false}
               value={emailAddress}
               placeholder="Enter your email"
               placeholderTextColor="#64748B"
@@ -238,13 +362,9 @@ export default function SignInPage() {
               keyboardType="email-address"
             />
           </View>
-          {errors?.fields?.identifier && (
-            <Text style={styles.errorText}>{errors.fields.identifier.message}</Text>
-          )}
 
-          {/* Password Input */}
           <Text style={styles.inputLabel}>Password</Text>
-          <View style={[styles.inputGroup, errors?.fields?.password && styles.inputErrorBorder]}>
+          <View style={styles.inputGroup}>
             <Ionicons name="lock-closed-outline" size={20} color="#64748B" style={styles.inputIcon} />
             <TextInput
               style={styles.input}
@@ -255,39 +375,33 @@ export default function SignInPage() {
               onChangeText={setPassword}
             />
           </View>
-          {errors?.fields?.password && (
-            <Text style={styles.errorText}>{errors.fields.password.message}</Text>
-          )}
 
-          {/* Email Submit Button */}
           <TouchableOpacity
-            style={[
-              styles.primaryButton,
-              (!emailAddress || !password || isFetching) && styles.buttonDisabled,
-            ]}
+            style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
             onPress={handleSubmit}
-            disabled={!emailAddress || !password || isFetching}
+            disabled={!canSubmit}
           >
-            {isFetching ? (
-              <ActivityIndicator color="#03151E" />
+            {isBusy ? (
+              <ActivityIndicator color="#070D14" />
             ) : (
               <Text style={styles.primaryButtonText}>Sign In</Text>
             )}
           </TouchableOpacity>
 
-          {/* Custom OR Divider */}
           <View style={styles.dividerContainer}>
             <View style={styles.dividerLine} />
             <Text style={styles.dividerText}>OR</Text>
             <View style={styles.dividerLine} />
           </View>
 
-          {/* Google SSO Button */}
-          <TouchableOpacity style={styles.ssoButton} onPress={handleGoogleSSO}>
+          <TouchableOpacity
+            style={[styles.ssoButton, (ssoLoading || loading) && styles.buttonDisabled]}
+            onPress={handleGoogleSSO}
+            disabled={ssoLoading || loading}
+          >
             <Ionicons name="logo-google" size={20} color="#FFFFFF" style={styles.ssoIcon} />
             <Text style={styles.ssoButtonText}>Continue with Google</Text>
           </TouchableOpacity>
-
         </View>
 
         <View style={styles.footerContainer}>
@@ -306,7 +420,7 @@ export default function SignInPage() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#03151E",
+    backgroundColor: "#070D14",
   },
   keyboardView: {
     flex: 1,
@@ -321,7 +435,7 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: "#0C1A25",
+    backgroundColor: "#0C1521",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 24,
@@ -355,7 +469,7 @@ const styles = StyleSheet.create({
   inputGroup: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#0C1A25",
+    backgroundColor: "#0C1521",
     borderWidth: 1,
     borderColor: "#1E2D3D",
     borderRadius: 12,
@@ -364,7 +478,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   inputErrorBorder: {
-    borderColor: "#EF4444",
+    borderColor: "#FF6B6B",
   },
   inputIcon: {
     marginRight: 12,
@@ -375,10 +489,26 @@ const styles = StyleSheet.create({
     fontSize: 15,
     height: "100%",
   },
-  errorText: {
-    color: "#EF4444",
-    fontSize: 12,
-    marginTop: -10,
+  errorBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 107, 107, 0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 107, 107, 0.3)",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 16,
+  },
+  errorBoxText: {
+    flex: 1,
+    color: "#FF6B6B",
+    fontSize: 13,
+    fontWeight: "600",
+    marginHorizontal: 8,
+  },
+  noticeText: {
+    color: "#00D293",
+    fontSize: 13,
     marginBottom: 16,
     marginLeft: 4,
   },
@@ -396,7 +526,7 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   primaryButtonText: {
-    color: "#03151E",
+    color: "#070D14",
     fontSize: 16,
     fontWeight: "700",
   },
@@ -442,7 +572,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#0C1A25", // Hollow dark background
+    backgroundColor: "#0C1521",
     borderWidth: 1,
     borderColor: "#1E2D3D",
   },
