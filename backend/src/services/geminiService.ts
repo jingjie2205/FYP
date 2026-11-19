@@ -192,34 +192,79 @@ const positive = (v: unknown): number | null => {
   return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null;
 };
 
+const sameId = (a: unknown, b: unknown) => a != null && b != null && String(a) === String(b);
+const sameName = (a: unknown, b: unknown) =>
+  typeof a === "string" && typeof b === "string" && a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** Finds a row by id (string-compared, so number vs string ids never fail), then falls back to a case-insensitive name. */
+function findRow<T extends { name?: string; title?: string }>(
+  rows: T[],
+  idOf: (row: T) => unknown,
+  id: unknown,
+  name: unknown
+): T | undefined {
+  const byId = id != null && id !== "" ? rows.find((r) => sameId(idOf(r), id)) : undefined;
+  if (byId) return byId;
+  return typeof name === "string" && name.trim() ? rows.find((r) => sameName(r.name ?? r.title, name)) : undefined;
+}
+
+export interface ProposalCheck {
+  metadata: ChatActionMetadata;
+  /** Set when a proposal was rejected: replaces the model's reply so it never promises a card that isn't there */
+  replyOverride?: string;
+}
+
 /**
  * Checks a model-proposed action against the user's real rows. Returns { actionType: "none" } when anything is
  * invalid, so a broken action card is never rendered. Names/groups are always taken from the database, not the model.
+ * Every rejection is logged with its reason.
  */
-export function validateChatProposal(raw: any, ctx: ChatContext): ChatActionMetadata {
+export function validateChatProposal(raw: any, ctx: ChatContext): ProposalCheck {
   const none: ChatActionMetadata = { actionType: "none" };
-  if (!raw || typeof raw !== "object") return none;
+  if (!raw || typeof raw !== "object" || !raw.actionType || raw.actionType === "none") return { metadata: none };
 
-  const envelopeById = new Map(ctx.envelopes.map((e) => [e.category_id, e]));
-  const accountById = new Map(ctx.accounts.map((a) => [a.id, a]));
-  const recurringById = new Map(ctx.recurring.map((r) => [r.id, r]));
+  console.warn("[chat] raw proposal:", JSON.stringify(raw));
+  const reject = (reason: string, replyOverride?: string): ProposalCheck => {
+    console.warn("[chat] proposal downgraded:", reason);
+    return {
+      metadata: none,
+      replyOverride:
+        replyOverride ??
+        "I couldn't turn that into an action you can confirm. Please tell me the exact envelopes, accounts and amounts and I'll try again.",
+    };
+  };
+
+  const money = (n: number) => "$" + n.toFixed(2);
 
   if (raw.actionType === "reallocation") {
     const d = raw.transferDetails;
-    const src = envelopeById.get(String(d?.sourceCategoryId ?? ""));
-    const dest = envelopeById.get(String(d?.destCategoryId ?? ""));
+    const src = findRow(ctx.envelopes, (e) => e.category_id, d?.sourceCategoryId, d?.sourceCategory);
+    const dest = findRow(ctx.envelopes, (e) => e.category_id, d?.destCategoryId, d?.destCategory);
     const amount = positive(d?.amount);
-    if (!src || !dest || src.category_id === dest.category_id || amount === null) return none;
+    if (!src) return reject("source envelope not found: " + JSON.stringify([d?.sourceCategoryId, d?.sourceCategory]));
+    if (!dest) return reject("destination envelope not found: " + JSON.stringify([d?.destCategoryId, d?.destCategory]));
+    if (src.category_id === dest.category_id) return reject("source and destination are the same envelope");
+    if (amount === null) return reject("invalid amount: " + JSON.stringify(d?.amount));
+
     // The reallocate endpoint rejects moving more than the source's assigned budget; don't offer what would fail
-    if (amount > (src.months[ctx.currentMonth]?.assigned ?? 0)) return none;
+    const assigned = src.months[ctx.currentMonth]?.assigned ?? 0;
+    if (amount > assigned) {
+      return reject(
+        "amount " + amount + " exceeds " + src.name + " assigned " + assigned + " for " + ctx.currentMonth,
+        src.name + " only has " + money(assigned) + " assigned this month, so I can't move " + money(amount) +
+          " out of it. Try an amount up to " + money(assigned) + ", or pick a different envelope to take it from."
+      );
+    }
     return {
-      actionType: "reallocation",
-      transferDetails: {
-        sourceCategoryId: src.category_id,
-        sourceCategory: src.name,
-        destCategoryId: dest.category_id,
-        destCategory: dest.name,
-        amount,
+      metadata: {
+        actionType: "reallocation",
+        transferDetails: {
+          sourceCategoryId: src.category_id,
+          sourceCategory: src.name,
+          destCategoryId: dest.category_id,
+          destCategory: dest.name,
+          amount,
+        },
       },
     };
   }
@@ -228,15 +273,18 @@ export function validateChatProposal(raw: any, ctx: ChatContext): ChatActionMeta
     const plan = raw.budgetPlan;
     const targetIncome = positive(plan?.targetIncome);
     const month = typeof plan?.month === "string" && /^\d{4}-(0[1-9]|1[0-2])$/.test(plan.month) ? plan.month : ctx.currentMonth;
-    if (targetIncome === null || !Array.isArray(plan?.allocations)) return none;
+    if (targetIncome === null) return reject("invalid targetIncome: " + JSON.stringify(plan?.targetIncome));
+    if (!Array.isArray(plan?.allocations)) return reject("allocations is not an array");
 
     const seen = new Set<string>();
     const allocations: { categoryId: string; categoryName: string; groupName: string; currentAssigned: number; proposedAssigned: number }[] = [];
     let total = 0;
     for (const item of plan.allocations) {
-      const env = envelopeById.get(String(item?.categoryId ?? ""));
+      const env = findRow(ctx.envelopes, (e) => e.category_id, item?.categoryId, item?.categoryName);
       const proposed = Number(item?.proposedAssigned);
-      if (!env || seen.has(env.category_id) || !Number.isFinite(proposed) || proposed < 0) return none;
+      if (!env) return reject("envelope not found: " + JSON.stringify([item?.categoryId, item?.categoryName]));
+      if (seen.has(env.category_id)) return reject("duplicate envelope in plan: " + env.name);
+      if (!Number.isFinite(proposed) || proposed < 0) return reject("invalid proposedAssigned for " + env.name + ": " + JSON.stringify(item?.proposedAssigned));
       seen.add(env.category_id);
       const rounded = Math.round(proposed * 100) / 100;
       total += rounded;
@@ -248,8 +296,14 @@ export function validateChatProposal(raw: any, ctx: ChatContext): ChatActionMeta
         proposedAssigned: rounded,
       });
     }
-    if (allocations.length === 0 || total > targetIncome + 0.005) return none;
-    return { actionType: "budget_allocation", budgetPlan: { targetIncome, month, allocations } };
+    if (allocations.length === 0) return reject("no allocations");
+    if (total > targetIncome + 0.005) {
+      return reject(
+        "allocations total " + total + " exceed income " + targetIncome,
+        "That plan would allocate " + money(total) + ", which is more than your " + money(targetIncome) + " income, so I haven't offered it. Want me to try again?"
+      );
+    }
+    return { metadata: { actionType: "budget_allocation", budgetPlan: { targetIncome, month, allocations } } };
   }
 
   if (raw.actionType === "recurring_proposal") {
@@ -259,58 +313,61 @@ export function validateChatProposal(raw: any, ctx: ChatContext): ChatActionMeta
     const title = typeof d?.title === "string" ? d.title.trim() : "";
     const type = d?.type === "income" ? "income" : d?.type === "expense" ? "expense" : null;
     const freq = normalizeFrequency(d?.frequency);
-    if (!mode || amount === null || !title || !type || !freq) return none;
+    if (!mode) return reject("invalid mode: " + JSON.stringify(raw.mode));
+    if (amount === null) return reject("invalid amount: " + JSON.stringify(d?.amount));
+    if (!title) return reject("missing title");
+    if (!type) return reject("invalid type: " + JSON.stringify(d?.type));
+    if (!freq) return reject("invalid frequency: " + JSON.stringify(d?.frequency));
 
     let recurringId: string | null = null;
     if (mode === "update") {
-      recurringId = String(d?.recurringId ?? "");
-      if (!recurringById.has(recurringId)) return none;
+      const existing = findRow(ctx.recurring, (r) => r.id, d?.recurringId, d?.title);
+      if (!existing) return reject("recurring rule not found: " + JSON.stringify([d?.recurringId, d?.title]));
+      recurringId = existing.id;
     }
 
     let accountId: string | null = null;
     let accountName: string | null = null;
-    if (d?.accountId) {
-      const acc = accountById.get(String(d.accountId));
-      if (!acc) return none;
+    if (d?.accountId || d?.accountName) {
+      const acc = findRow(ctx.accounts, (a) => a.id, d?.accountId, d?.accountName);
+      if (!acc) return reject("account not found: " + JSON.stringify([d?.accountId, d?.accountName]));
       accountId = acc.id;
       accountName = acc.name;
     }
 
     let categoryId: string | null = null;
     let categoryName: string | null = null;
-    if (type === "expense" && d?.categoryId) {
-      const env = envelopeById.get(String(d.categoryId));
-      if (!env) return none;
+    if (type === "expense" && (d?.categoryId || d?.categoryName)) {
+      const env = findRow(ctx.envelopes, (e) => e.category_id, d?.categoryId, d?.categoryName);
+      if (!env) return reject("envelope not found: " + JSON.stringify([d?.categoryId, d?.categoryName]));
       categoryId = env.category_id;
       categoryName = env.name;
     }
 
     const nextDate = isValidDateString(d?.nextDate) ? d.nextDate : ctx.today;
     return {
-      actionType: "recurring_proposal",
-      mode,
-      recurringDetails: {
-        recurringId,
-        title: title.slice(0, 255),
-        amount,
-        type,
-        accountId,
-        accountName,
-        categoryId,
-        categoryName,
-        frequency: freq.charAt(0).toUpperCase() + freq.slice(1),
-        nextDate,
+      metadata: {
+        actionType: "recurring_proposal",
+        mode,
+        recurringDetails: {
+          recurringId,
+          title: title.slice(0, 255),
+          amount,
+          type,
+          accountId,
+          accountName,
+          categoryId,
+          categoryName,
+          frequency: freq.charAt(0).toUpperCase() + freq.slice(1),
+          nextDate,
+        },
       },
     };
   }
 
-  return none;
+  return reject("unknown actionType: " + JSON.stringify(raw.actionType));
 }
 
-/**
- * Chat assistant. Read-only: it receives a snapshot of the user's data, has no tools, and can only PROPOSE actions.
- * Proposals are validated against the snapshot before being returned; the app applies them through user-confirmed modals.
- */
 /** True for Gemini's "503 - model is currently experiencing high demand" (UNAVAILABLE) errors. */
 export function isModelOverloadedError(error: unknown): boolean {
   const e = error as any;
@@ -490,7 +547,19 @@ In "reply", briefly explain the proposal and say the user can review and confirm
       .replace(/```json[\s\S]*?```/g, "")
       .trim();
 
-    return { replyText, metadata: ctx ? validateChatProposal(parsed.metadata, ctx) : ({ actionType: "none" } as ChatActionMetadata) };
+    if (!ctx) return { replyText, metadata: { actionType: "none" } };
+
+    const check = validateChatProposal(parsed.metadata, ctx);
+    let finalReply = check.replyOverride ?? replyText;
+
+    // The reply promises a card but the model sent no proposal at all: don't leave a dangling promise
+    if (check.metadata.actionType === "none" && !check.replyOverride && !parsed.metadata &&
+        /prepared (a|an|the) (proposal|plan)|review (and|&) (confirm|apply)|confirm (it |this )?below|card below/i.test(replyText)) {
+      console.warn("[chat] reply promised a proposal but metadata was empty:", replyText);
+      finalReply = "I wasn't able to put that into an action you can confirm. Please tell me the exact envelopes, accounts and amounts and I'll try again.";
+    }
+
+    return { replyText: finalReply, metadata: check.metadata };
   } catch (error) {
     console.error("Error in geminiService:", error);
     return {
