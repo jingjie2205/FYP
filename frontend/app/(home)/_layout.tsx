@@ -55,7 +55,7 @@ export default function HomeLayout() {
       <Tabs.Screen
         name="savings"
         options={{
-          title: "Savings",
+          title: "Budget",
           tabBarIcon: ({ color, focused }) => (
             <Ionicons
               name={focused ? "trending-up" : "trending-up-outline"}

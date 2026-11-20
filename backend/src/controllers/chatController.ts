@@ -2,6 +2,7 @@ import { sql } from "../config/db.js";
 import { Request, Response } from "express";
 import { needsFinancialContext, processChatQueryWithGemini } from "../services/geminiService.js";
 import { buildChatContext } from "../services/chatContextService.js";
+import { buildDemoFallback, DEMO_FALLBACK_TIMEOUT_MS, isDemoPrompt, isFailureReply } from "../services/demoFallback.js";
 
 // jsonb normally arrives parsed, but a string-encoded value would silently hide action cards in the app
 function withParsedMetadata(row: any) {
@@ -121,7 +122,30 @@ export async function sendMessage(req: Request, res: Response) {
                 ? await buildChatContext(userId, today)
                 : null;
 
-            const aiResult = await processChatQueryWithGemini(content, history, context, today);
+            const gemini = processChatQueryWithGemini(content, history, context, today);
+            let aiResult;
+
+            // Demo safety net : rehearsed prompts get a local answer if Gemini is slow or failing
+            if (isDemoPrompt(content)) {
+                const timedOut = Symbol("timeout");
+                const first = await Promise.race([
+                    gemini,
+                    new Promise<typeof timedOut>((resolve) => setTimeout(() => resolve(timedOut), DEMO_FALLBACK_TIMEOUT_MS)),
+                ]);
+                aiResult = first === timedOut ? null : first;
+                if (aiResult === null || isFailureReply(aiResult)) {
+                    const demoContext = context ?? (await buildChatContext(userId, today));
+                    const fallback = buildDemoFallback(content, demoContext);
+                    if (fallback) {
+                        console.warn("[chat] demo fallback used for prompt:", content);
+                        aiResult = fallback;
+                    } else if (aiResult === null) {
+                        aiResult = await gemini;
+                    }
+                }
+            } else {
+                aiResult = await gemini;
+            }
 
             // Save assistant reply (metadata already validated against the user's real rows)
             const aiMessageRows = await sql`
